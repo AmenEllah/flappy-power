@@ -2,16 +2,26 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#101827" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Flappy Power" />
   <title>Flappy Power</title>
+  <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <main class="shell" aria-label="Flappy Power game">
     <section class="game-card">
+      <div class="toolbar" aria-label="Game controls">
+        <button id="pauseBtn" type="button">Pause</button>
+        <button id="muteBtn" type="button">Sound on</button>
+        <button id="fullscreenBtn" type="button">Fullscreen</button>
+        <button id="shareBtn" type="button">Share</button>
+      </div>
       <canvas id="game" width="400" height="600" aria-label="Flappy Power canvas game"></canvas>
-      <div class="hint" aria-hidden="true">Space / Click / Tap to flap · Hold briefly for a softer boost</div>
+      <div class="hint" aria-hidden="true">Tap / Space to flap · every 10 best-score points unlocks a new skin</div>
     </section>
   </main>
   <script src="game.js"></script>

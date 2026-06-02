@@ -1,0 +1,19 @@
+{
+  "name": "Flappy Power",
+  "short_name": "Flappy Power",
+  "description": "A mobile-friendly Flappy-style HTML5 Canvas game with power-ups and unlockable skins.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#101827",
+  "theme_color": "#101827",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='42' fill='%23101827'/%3E%3Ccircle cx='88' cy='96' r='52' fill='%23facc15'/%3E%3Cpath d='M120 88l42 18-42 18z' fill='%23fb923c'/%3E%3Ccircle cx='102' cy='78' r='8' fill='%23111827'/%3E%3Cpath d='M48 116c24 20 54 22 78 3' stroke='%23f59e0b' stroke-width='16' fill='none' stroke-linecap='round'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
