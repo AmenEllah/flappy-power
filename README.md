@@ -8,7 +8,7 @@ A Flappy Bird-style HTML5 Canvas game built from `flappy-game-guide.md`.
 - Fixed timestep game loop
 - Bird physics with buffered flap input, cooldown, and hold boost
 - Pipes, collision detection, scoring, and persistent best score
-- Power-ups: shield, slow time, and bonus points
+- Power-ups: shield, slow time, bonus points, and shrink mode
 - Menu, playing, and game-over states
 - Mobile-friendly tap controls plus keyboard controls
 - Lightweight generated Web Audio sound effects

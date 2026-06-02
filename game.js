@@ -23,6 +23,8 @@
   const SPAWN_TICKS = 94;
   const HITBOX_PAD = 6;
   const ORB_CHANCE = 0.38;
+  const SHIELD_GRACE_TICKS = 90;
+  const SHRINK_SCALE = 0.58;
 
   const POWERUPS = {
     shield: { label: "Shield", color: "#38bdf8", duration: 540, icon: "◆" },
@@ -42,6 +44,7 @@
   let messageTimer = 0;
   let message = "";
   let audioCtx = null;
+  let shieldGrace = 0;
 
   const keys = { down: false, holdTicks: 0 };
   let inputBuffer = 0;
@@ -78,6 +81,7 @@
     keys.holdTicks = 0;
     Object.assign(bird, { x: 104, y: 250, vy: 0, rot: 0, wing: 0, alive: true });
     active = { shield: 0, slow: 0, shrink: 0 };
+    shieldGrace = 0;
     pipes = [];
     particles = [];
     orbs = [];
@@ -214,14 +218,25 @@
     beep(type === "shield" ? 660 : 330, 0.12, "triangle", 0.04);
   }
 
-  function crash() {
+  function birdRadius() {
+    return active.shrink > 0 ? bird.r * SHRINK_SCALE : bird.r;
+  }
+
+  function crash(sourcePipe = null) {
+    if (shieldGrace > 0) return;
     if (active.shield > 0) {
       active.shield = 0;
+      shieldGrace = SHIELD_GRACE_TICKS;
       bird.vy = FLAP * 0.72;
       shake = 12;
       flash = 18;
       message = "Shield saved you!";
       messageTimer = 90;
+      if (sourcePipe) {
+        sourcePipe.passed = true;
+        sourcePipe.x = -PIPE_W - 80;
+        addParticles(sourcePipe.x + PIPE_W / 2, sourcePipe.gapY, POWERUPS.shield.color, 18, 5.2);
+      }
       addParticles(bird.x, bird.y, POWERUPS.shield.color, 24, 4.2);
       beep(220, 0.16, "sawtooth", 0.04);
       return;
@@ -251,6 +266,7 @@
     if (messageTimer > 0) messageTimer -= 1;
     if (flash > 0) flash -= 1;
     if (shake > 0) shake -= 1;
+    if (shieldGrace > 0) shieldGrace -= 1;
     if (bird.wing > 0) bird.wing -= 1;
 
     for (const key of Object.keys(active)) {
@@ -276,7 +292,7 @@
         pipe.orb.x = pipe.x + PIPE_W / 2;
         pipe.orb.pulse += 0.16;
       }
-      if (!pipe.passed && pipe.x + PIPE_W < bird.x - bird.r) {
+      if (!pipe.passed && pipe.x + PIPE_W < bird.x - birdRadius()) {
         pipe.passed = true;
         score += 1;
         flash = 5;
@@ -289,12 +305,12 @@
     for (const pipe of pipes) {
       const topH = pipe.gapY - PIPE_GAP / 2;
       const botY = pipe.gapY + PIPE_GAP / 2;
-      const effectiveRadius = (active.shrink > 0 ? bird.r * 0.64 : bird.r) - HITBOX_PAD;
-      if (
+      const effectiveRadius = Math.max(4, birdRadius() - HITBOX_PAD);
+      if (shieldGrace <= 0 && (
         circleRectCollision(bird.x, bird.y, effectiveRadius, pipe.x, 0, PIPE_W, topH) ||
         circleRectCollision(bird.x, bird.y, effectiveRadius, pipe.x, botY, PIPE_W, SKY_H - botY)
-      ) {
-        crash();
+      )) {
+        crash(pipe);
         break;
       }
 
@@ -302,7 +318,7 @@
       if (orb && !orb.collected) {
         const dx = bird.x - orb.x;
         const dy = bird.y - orb.y;
-        if (dx * dx + dy * dy < (bird.r + orb.r) ** 2) {
+        if (dx * dx + dy * dy < (birdRadius() + orb.r) ** 2) {
           orb.collected = true;
           activatePowerup(orb.type);
           addParticles(orb.x, orb.y, POWERUPS[orb.type].color, 22, 3.3);
@@ -310,11 +326,15 @@
       }
     }
 
-    if (bird.y - bird.r < 0) {
-      bird.y = bird.r;
+    const radius = birdRadius();
+    if (bird.y - radius < 0) {
+      bird.y = radius;
       bird.vy = 0;
     }
-    if (bird.y + bird.r > SKY_H) crash();
+    if (bird.y + radius > SKY_H) {
+      bird.y = SKY_H - radius;
+      crash();
+    }
 
     updateAmbient();
   }
@@ -407,15 +427,22 @@
   }
 
   function drawBird() {
+    const radius = birdRadius();
     ctx.save();
     ctx.translate(bird.x, bird.y);
     ctx.rotate(bird.rot);
-    if (active.shield > 0) {
-      ctx.strokeStyle = "rgba(56, 189, 248, .72)";
+    if (active.shield > 0 || shieldGrace > 0) {
+      ctx.strokeStyle = shieldGrace > 0 ? "rgba(125, 211, 252, .92)" : "rgba(56, 189, 248, .72)";
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(0, 0, bird.r + 8 + Math.sin(tick * 0.18) * 2, 0, Math.PI * 2);
+      ctx.arc(0, 0, radius + 8 + Math.sin(tick * 0.18) * 2, 0, Math.PI * 2);
       ctx.stroke();
+    }
+
+    if (active.shrink > 0) {
+      ctx.scale(SHRINK_SCALE, SHRINK_SCALE);
+      ctx.shadowColor = POWERUPS.shrink.color;
+      ctx.shadowBlur = 12;
     }
 
     ctx.fillStyle = "#facc15";
@@ -617,7 +644,18 @@
     get score() { return score; },
     get pipes() { return pipes.length; },
     get orbs() { return pipes.filter((p) => p.orb && !p.orb.collected).length; },
+    get active() { return { ...active, shieldGrace }; },
     start: () => inputStart(),
+    activate: activatePowerup,
+    forceShieldCrash: () => {
+      active.shield = 60;
+      crash({ x: bird.x, gapY: bird.y, passed: false });
+      return { state, active: { ...active, shieldGrace } };
+    },
+    forceShrink: () => {
+      activatePowerup("shrink");
+      return { state, radius: birdRadius(), active: { ...active, shieldGrace } };
+    },
     reset: () => resetWorld(false),
   };
 })();
