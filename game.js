@@ -28,30 +28,43 @@
   const ORB_CHANCE = 0.36;
   const SHIELD_GRACE_TICKS = 90;
   const SHRINK_SCALE = 0.58;
+  const NEAR_MISS_THRESHOLD = 14;
+  const PRESTIGE_TRAILS = ["#f0abfc", "#fde68a", "#67e8f9", "#fb7185", "#a78bfa", "#fdba74"];
 
   const POWERUPS = {
     shield: { label: "Shield", color: "#38bdf8", duration: 540, icon: "◆" },
-    slow: { label: "Slow", color: "#a78bfa", duration: 360, icon: "⏱" },
-    bonus: { label: "+3", color: "#fbbf24", duration: 0, icon: "+" },
+    slow:   { label: "Slow",   color: "#a78bfa", duration: 360, icon: "⏱" },
+    bonus:  { label: "+3",     color: "#fbbf24", duration: 0,   icon: "+" },
     shrink: { label: "Shrink", color: "#69db7c", duration: 360, icon: "⚪" },
   };
 
   const SKINS = [
-    { name: "Sunny", unlock: 0, body: "#facc15", wing: "#f59e0b", beak: "#fb923c", eye: "#111827", glow: "#fde68a" },
+    { name: "Sunny",  unlock: 0,  body: "#facc15", wing: "#f59e0b", beak: "#fb923c", eye: "#111827", glow: "#fde68a" },
     { name: "Bubble", unlock: 10, body: "#38bdf8", wing: "#0ea5e9", beak: "#fbbf24", eye: "#082f49", glow: "#bae6fd" },
-    { name: "Mint", unlock: 20, body: "#4ade80", wing: "#16a34a", beak: "#fde047", eye: "#052e16", glow: "#bbf7d0" },
-    { name: "Rose", unlock: 30, body: "#fb7185", wing: "#e11d48", beak: "#f97316", eye: "#4c0519", glow: "#fecdd3" },
+    { name: "Mint",   unlock: 20, body: "#4ade80", wing: "#16a34a", beak: "#fde047", eye: "#052e16", glow: "#bbf7d0" },
+    { name: "Rose",   unlock: 30, body: "#fb7185", wing: "#e11d48", beak: "#f97316", eye: "#4c0519", glow: "#fecdd3" },
     { name: "Violet", unlock: 40, body: "#a78bfa", wing: "#7c3aed", beak: "#facc15", eye: "#2e1065", glow: "#ddd6fe" },
-    { name: "Cyber", unlock: 50, body: "#22d3ee", wing: "#f0abfc", beak: "#f97316", eye: "#020617", glow: "#67e8f9" },
-    { name: "Lava", unlock: 60, body: "#f97316", wing: "#dc2626", beak: "#fde047", eye: "#431407", glow: "#fed7aa" },
-    { name: "Ghost", unlock: 70, body: "#e2e8f0", wing: "#94a3b8", beak: "#38bdf8", eye: "#0f172a", glow: "#f8fafc" },
+    { name: "Cyber",  unlock: 50, body: "#22d3ee", wing: "#f0abfc", beak: "#f97316", eye: "#020617", glow: "#67e8f9" },
+    { name: "Lava",   unlock: 60, body: "#f97316", wing: "#dc2626", beak: "#fde047", eye: "#431407", glow: "#fed7aa" },
+    { name: "Ghost",  unlock: 70, body: "#e2e8f0", wing: "#94a3b8", beak: "#38bdf8", eye: "#0f172a", glow: "#f8fafc" },
   ];
 
-  const MISSIONS = [
-    { label: "Pass 5 pipes", done: () => score >= 5 },
-    { label: "Collect 3 power-ups", done: () => powerupsCollected >= 3 },
-    { label: "Reach combo x5", done: () => combo >= 5 },
+  // Step 8: rotating mission pool — 3 random missions are picked per run
+  const MISSION_POOL = [
+    { label: "Pass 5 pipes",        test: (s) => s.pipesPassed >= 5 },
+    { label: "Pass 15 pipes",       test: (s) => s.pipesPassed >= 15 },
+    { label: "Collect 3 power-ups", test: (s) => s.powerupsCollected >= 3 },
+    { label: "Collect 5 power-ups", test: (s) => s.powerupsCollected >= 5 },
+    { label: "Reach combo x5",      test: (s) => s.maxCombo >= 5 },
+    { label: "Reach combo x8",      test: (s) => s.maxCombo >= 8 },
+    { label: "Collect 2 shields",   test: (s) => s.shieldsCollected >= 2 },
+    { label: "Score 10 points",     test: (s) => s.score >= 10 },
+    { label: "Score 20 points",     test: (s) => s.score >= 20 },
+    { label: "Get 3x multiplier",   test: (s) => s.maxMultiplier >= 3 },
   ];
+
+  // per-run counters used by mission tests
+  const missionStats = { pipesPassed: 0, powerupsCollected: 0, maxCombo: 0, shieldsCollected: 0, score: 0, maxMultiplier: 1 };
 
   let state = "menu";
   let accumulator = 0;
@@ -68,7 +81,10 @@
   let message = "";
   let powerupsCollected = 0;
   let shieldGrace = 0;
+  let newBest = false;        // Step 2: tracks if this run set a new best
+  let activeMissions = [];    // Step 8: missions for the current run
   let audioCtx = null;
+  let ambientGain = null;     // Step 9: gain node for the ambient bass loop
   let lastUnlockedIndex = unlockedSkinCount() - 1;
 
   const keys = { down: false, holdTicks: 0 };
@@ -85,13 +101,43 @@
 
   function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
   function rand(min, max) { return min + Math.random() * (max - min); }
-  function difficulty() { return Math.min(1, score / 65); }
-  function pipeSpeed() { return (BASE_PIPE_SPEED + difficulty() * 1.42) * (active.slow > 0 ? 0.58 : 1); }
-  function pipeGap() { return BASE_PIPE_GAP - difficulty() * 34; }
-  function pipeSpawnTicks() { return Math.round(BASE_SPAWN_TICKS - difficulty() * 20); }
+
+  // Step 5: two-phase difficulty — caps at 1.0 up to score 65, then creeps slowly forever
+  function difficulty() {
+    if (score <= 65) return score / 65;
+    return 1 + (score - 65) * 0.004;
+  }
+
+  // Step 3: combo score multiplier — every 5 combo = +1x
+  function comboMultiplier() { return Math.max(1, Math.floor(combo / 5)); }
+
+  function pipeSpeed() {
+    const d = Math.min(difficulty(), 2.5);
+    return (BASE_PIPE_SPEED + d * 1.42) * (active.slow > 0 ? 0.58 : 1);
+  }
+  function pipeGap() { return Math.max(104, BASE_PIPE_GAP - Math.min(difficulty(), 1) * 34); }
+  function pipeSpawnTicks() { return Math.max(62, Math.round(BASE_SPAWN_TICKS - Math.min(difficulty(), 1) * 20)); }
   function birdRadius() { return active.shrink > 0 ? bird.r * SHRINK_SCALE : bird.r; }
   function unlockedSkinCount() { return clamp(Math.floor(best / 10) + 1, 1, SKINS.length); }
   function skin() { return SKINS[clamp(selectedSkin, 0, unlockedSkinCount() - 1)]; }
+
+  // Step 7: prestige level (every 25 pts past score 80) and its trail colour
+  function prestige() { return score > 80 ? Math.floor((score - 80) / 25) : 0; }
+  function prestigeColor() { return PRESTIGE_TRAILS[prestige() % PRESTIGE_TRAILS.length]; }
+
+  function pickMissions() {
+    const pool = [...MISSION_POOL];
+    const picked = [];
+    while (picked.length < 3 && pool.length > 0) {
+      picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+    }
+    return picked;
+  }
+
+  // Step 1: haptic feedback helper
+  function vibrate(ms) {
+    if (navigator.vibrate) navigator.vibrate(ms);
+  }
 
   function resetWorld(startPlaying = false) {
     state = startPlaying ? "playing" : "menu";
@@ -105,6 +151,7 @@
     message = startPlaying ? "Mission: pass pipes + collect orbs" : "";
     powerupsCollected = 0;
     shieldGrace = 0;
+    newBest = false;
     inputBuffer = 0;
     flapCooldown = 0;
     keys.down = false;
@@ -116,7 +163,13 @@
     clouds = Array.from({ length: 7 }, (_, i) => ({ x: i * 72 + rand(0, 28), y: rand(38, 190), s: rand(0.55, 1.25), v: rand(0.10, 0.24) }));
     hills = Array.from({ length: 5 }, (_, i) => ({ x: i * 108 - 20, y: SKY_H - rand(30, 80), s: rand(0.75, 1.35), v: rand(0.34, 0.48) }));
     stars = Array.from({ length: 26 }, () => ({ x: rand(0, W), y: rand(16, 190), tw: rand(0, Math.PI * 2) }));
-    if (startPlaying) spawnPipe();
+    Object.assign(missionStats, { pipesPassed: 0, powerupsCollected: 0, maxCombo: 0, shieldsCollected: 0, score: 0, maxMultiplier: 1 });
+    activeMissions = pickMissions();
+    if (startPlaying) {
+      spawnPipe();
+      // Step 9: fade ambient back in when a run starts
+      if (ambientGain) ambientGain.gain.setTargetAtTime(0.008, audioCtx.currentTime, 0.5);
+    }
     updateButtons();
   }
 
@@ -124,9 +177,25 @@
     if (muted) return;
     if (!audioCtx) {
       const Audio = window.AudioContext || window.webkitAudioContext;
-      if (Audio) audioCtx = new Audio();
+      if (Audio) {
+        audioCtx = new Audio();
+        startAmbient();
+      }
     }
-    if (audioCtx?.state === "suspended") audioCtx.resume();
+    if (audioCtx?.state === "suspended") audioCtx.resume().then(() => { if (!ambientGain) startAmbient(); });
+  }
+
+  // Step 9: looping low-frequency bass pad for atmosphere
+  function startAmbient() {
+    if (!audioCtx || ambientGain || muted) return;
+    const osc = audioCtx.createOscillator();
+    ambientGain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 82;
+    ambientGain.gain.value = 0.008;
+    osc.connect(ambientGain);
+    ambientGain.connect(audioCtx.destination);
+    osc.start();
   }
 
   function beep(freq = 440, duration = 0.08, type = "sine", gain = 0.045) {
@@ -155,10 +224,32 @@
     const gap = pipeGap();
     const margin = 54;
     const gapY = rand(margin + gap / 2, SKY_H - margin - gap / 2);
-    const pipe = { x: W + 22, gapY, gap, w: BASE_PIPE_W, passed: false, orb: null };
+    // Step 6: pipes move vertically once score >= 30
+    const moving = score >= 30;
+    const pipe = {
+      x: W + 22,
+      gapY,
+      baseGapY: gapY,
+      gap,
+      w: BASE_PIPE_W,
+      passed: false,
+      orb: null,
+      moveAmp:   moving ? rand(18, 36) : 0,
+      movePhase: moving ? rand(0, Math.PI * 2) : 0,
+      moveSpeed: moving ? rand(0.022, 0.038) : 0,
+    };
     if (Math.random() < ORB_CHANCE) {
       const types = Object.keys(POWERUPS);
-      pipe.orb = { x: pipe.x + pipe.w / 2, y: gapY + rand(-gap * 0.27, gap * 0.27), r: 12, type: types[Math.floor(Math.random() * types.length)], collected: false, pulse: rand(0, Math.PI * 2) };
+      const orbOffsetY = rand(-gap * 0.27, gap * 0.27);
+      pipe.orb = {
+        x: pipe.x + pipe.w / 2,
+        y: gapY + orbOffsetY,
+        orbOffsetY,
+        r: 12,
+        type: types[Math.floor(Math.random() * types.length)],
+        collected: false,
+        pulse: rand(0, Math.PI * 2),
+      };
     }
     pipes.push(pipe);
   }
@@ -168,7 +259,9 @@
     bird.wing = 8;
     flapCooldown = COOLDOWN_TICKS;
     inputBuffer = 0;
-    addParticles(bird.x - 8, bird.y + 8, "rgba(255,255,255,.75)", 5, 1.6);
+    // Step 7: prestige trail colour on flap particles
+    const trailColor = prestige() > 0 ? prestigeColor() : "rgba(255,255,255,.75)";
+    addParticles(bird.x - 8, bird.y + 8, trailColor, 5, 1.6);
     beep(520, 0.055, "triangle", 0.035);
   }
 
@@ -179,11 +272,15 @@
 
   function activatePowerup(type) {
     if (type === "bonus") {
-      score += 3;
+      // Step 3: bonus orb score is also multiplied by current combo multiplier
+      const pts = 3 * comboMultiplier();
+      score += pts;
       combo += 1;
-      showMessage("+3 bonus!", 72);
+      missionStats.score = score;
+      showMessage(`+${pts} bonus!`, 72);
       flash = 10;
       beep(880, 0.09, "square", 0.035);
+      vibrate(10);
       checkUnlocks();
       return;
     }
@@ -191,12 +288,16 @@
     showMessage(`${POWERUPS[type].label}!`, 90);
     flash = 8;
     beep(type === "shield" ? 660 : type === "shrink" ? 590 : 330, 0.12, "triangle", 0.04);
+    vibrate(10);
+    if (type === "shield") missionStats.shieldsCollected += 1;
   }
 
   function checkUnlocks() {
     const previousBest = best;
     best = Math.max(best, score);
     localStorage.setItem("flappy-power-best", String(best));
+    // Step 2: flag new best so the game-over overlay can show the banner
+    if (best > previousBest) newBest = true;
     const unlocked = unlockedSkinCount() - 1;
     if (best > previousBest && unlocked > lastUnlockedIndex) {
       lastUnlockedIndex = unlocked;
@@ -225,6 +326,7 @@
       }
       addParticles(bird.x, bird.y, POWERUPS.shield.color, 24, 4.2);
       beep(220, 0.16, "sawtooth", 0.04);
+      vibrate(20);
       return;
     }
     state = "gameover";
@@ -235,6 +337,9 @@
     checkUnlocks();
     addParticles(bird.x, bird.y, "#fb7185", 34, 5);
     beep(130, 0.22, "sawtooth", 0.045);
+    vibrate(20);
+    // Step 9: fade ambient out on game over
+    if (ambientGain) ambientGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.8);
     updateButtons();
   }
 
@@ -292,18 +397,55 @@
     const speed = pipeSpeed();
     for (const pipe of pipes) {
       pipe.x -= speed;
+
+      // Step 6: oscillate gapY for moving pipes
+      if (pipe.moveAmp > 0) {
+        pipe.movePhase += pipe.moveSpeed;
+        pipe.gapY = pipe.baseGapY + Math.sin(pipe.movePhase) * pipe.moveAmp;
+      }
+
       if (pipe.orb && !pipe.orb.collected) {
         pipe.orb.x = pipe.x + pipe.w / 2;
+        // orb stays at its fixed offset relative to the (possibly moving) gap centre
+        pipe.orb.y = pipe.gapY + pipe.orb.orbOffsetY;
         pipe.orb.pulse += 0.16;
       }
+
       if (!pipe.passed && pipe.x + pipe.w < bird.x - birdRadius()) {
         pipe.passed = true;
-        score += 1;
+
+        // Step 3: score scales with combo multiplier
+        const mult = comboMultiplier();
+        score += mult;
         combo += 1;
+        missionStats.pipesPassed += 1;
+        missionStats.score = score;
+        if (combo > missionStats.maxCombo) missionStats.maxCombo = combo;
+        if (mult > missionStats.maxMultiplier) missionStats.maxMultiplier = mult;
         flash = 5;
-        addParticles(bird.x, bird.y - 20, combo >= 5 ? "#f0abfc" : "#fde68a", combo >= 5 ? 14 : 8, 2.4);
-        beep(combo >= 5 ? 960 : 760, 0.06, "sine", 0.03);
-        if (combo === 5 || combo === 10 || combo === 20) showMessage(`Combo x${combo}!`, 84);
+
+        // Step 4: near-miss bonus — tight vertical clearance earns +1
+        const topH = pipe.gapY - pipe.gap / 2;
+        const botY = pipe.gapY + pipe.gap / 2;
+        const topClear = (bird.y - birdRadius()) - topH;
+        const botClear = botY - (bird.y + birdRadius());
+        const minClear = Math.min(topClear, botClear);
+        if (minClear >= 0 && minClear < NEAR_MISS_THRESHOLD) {
+          score += 1;
+          missionStats.score = score;
+          showMessage("Close! +1", 60);
+          addParticles(bird.x, bird.y, "#ffffff", 8, 2.2);
+          beep(1100, 0.04, "sine", 0.025);
+          vibrate(8);
+        } else {
+          addParticles(bird.x, bird.y - 20, combo >= 5 ? "#f0abfc" : "#fde68a", combo >= 5 ? 14 : 8, 2.4);
+          beep(combo >= 5 ? 960 : 760, 0.06, "sine", 0.03);
+        }
+
+        if (combo === 5 || combo === 10 || combo === 20) {
+          showMessage(`Combo x${combo}! ${mult > 1 ? `×${mult} score` : ""}`, 84);
+          vibrate(15);
+        }
         checkUnlocks();
       }
     }
@@ -324,6 +466,7 @@
         if (dx * dx + dy * dy < (birdRadius() + orb.r) ** 2) {
           orb.collected = true;
           powerupsCollected += 1;
+          missionStats.powerupsCollected += 1;
           activatePowerup(orb.type);
           addParticles(orb.x, orb.y, POWERUPS[orb.type].color, 24, 3.4);
         }
@@ -405,16 +548,18 @@
   function drawPipe(pipe) {
     const topH = pipe.gapY - pipe.gap / 2;
     const botY = pipe.gapY + pipe.gap / 2;
+    // Step 6: moving pipes use blue gradient to warn the player
+    const moving = pipe.moveAmp > 0;
     const grad = ctx.createLinearGradient(pipe.x, 0, pipe.x + pipe.w, 0);
-    grad.addColorStop(0, "#16a34a");
-    grad.addColorStop(0.5, "#86efac");
-    grad.addColorStop(1, "#15803d");
+    grad.addColorStop(0,   moving ? "#1d4ed8" : "#16a34a");
+    grad.addColorStop(0.5, moving ? "#93c5fd" : "#86efac");
+    grad.addColorStop(1,   moving ? "#1e40af" : "#15803d");
     ctx.fillStyle = grad;
     roundRect(pipe.x, -12, pipe.w, topH + 12, 10); ctx.fill();
     roundRect(pipe.x - 6, topH - 22, pipe.w + 12, 24, 9); ctx.fill();
     roundRect(pipe.x, botY, pipe.w, SKY_H - botY + 12, 10); ctx.fill();
     roundRect(pipe.x - 6, botY, pipe.w + 12, 24, 9); ctx.fill();
-    ctx.strokeStyle = "rgba(15, 118, 53, .5)";
+    ctx.strokeStyle = moving ? "rgba(30, 64, 175, .5)" : "rgba(15, 118, 53, .5)";
     ctx.lineWidth = 3;
     ctx.strokeRect(pipe.x + 10, 0, 1, Math.max(0, topH - 22));
     ctx.strokeRect(pipe.x + 10, botY + 24, 1, Math.max(0, SKY_H - botY));
@@ -452,6 +597,16 @@
       ctx.beginPath();
       ctx.arc(0, 0, radius + 8 + Math.sin(tick * 0.18) * 2, 0, Math.PI * 2);
       ctx.stroke();
+    }
+    // Step 7: pulsing prestige aura ring
+    if (prestige() > 0) {
+      ctx.strokeStyle = prestigeColor();
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.6 + Math.sin(tick * 0.12) * 0.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius + 13 + Math.sin(tick * 0.09) * 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
     if (active.shrink > 0) {
       ctx.scale(SHRINK_SCALE, SHRINK_SCALE);
@@ -501,7 +656,19 @@
     ctx.fillText(String(score), 28, 36);
     ctx.font = "700 11px system-ui"; ctx.fillStyle = "rgba(255,255,255,.75)";
     ctx.fillText(`BEST ${best}`, 70, 29);
-    ctx.fillText(combo >= 2 ? `COMBO x${combo}` : `SKIN ${skin().name}`, 70, 44);
+
+    // Step 3: show multiplier in combo line; Step 7: show prestige when idle
+    const mult = comboMultiplier();
+    if (combo >= 2) {
+      ctx.fillStyle = mult > 1 ? "#fde68a" : "rgba(255,255,255,.75)";
+      ctx.fillText(`COMBO x${combo}${mult > 1 ? ` ×${mult}` : ""}`, 70, 44);
+    } else if (prestige() > 0) {
+      ctx.fillStyle = prestigeColor();
+      ctx.fillText(`❖ PRESTIGE ${prestige()}`, 70, 44);
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,.75)";
+      ctx.fillText(`SKIN ${skin().name}`, 70, 44);
+    }
 
     let x = W - 18;
     for (const [type, value] of Object.entries(active)) {
@@ -523,6 +690,7 @@
     ctx.restore();
   }
 
+  // Step 8: use activeMissions picked per-run instead of fixed list
   function drawMissions() {
     ctx.save();
     ctx.globalAlpha = 0.9;
@@ -530,9 +698,10 @@
     roundRect(14, 66, 154, 72, 16); ctx.fill();
     ctx.font = "700 10px system-ui";
     ctx.textAlign = "left";
-    MISSIONS.forEach((m, i) => {
-      ctx.fillStyle = m.done() ? "#86efac" : "rgba(255,255,255,.76)";
-      ctx.fillText(`${m.done() ? "✓" : "○"} ${m.label}`, 26, 86 + i * 18);
+    activeMissions.forEach((m, i) => {
+      const done = m.test(missionStats);
+      ctx.fillStyle = done ? "#86efac" : "rgba(255,255,255,.76)";
+      ctx.fillText(`${done ? "✓" : "○"} ${m.label}`, 26, 86 + i * 18);
     });
     ctx.restore();
   }
@@ -569,9 +738,19 @@
     ctx.strokeStyle = "rgba(15, 23, 42, .10)"; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = "#0f172a"; ctx.textAlign = "center"; ctx.font = "900 32px system-ui"; ctx.fillText(title, W / 2, 170);
     ctx.font = "600 14px system-ui"; wrapText(subtitle, W / 2, 202, W - 92, 21);
-    ctx.fillStyle = "#f97316"; roundRect(92, 330, W - 184, 48, 24); ctx.fill();
-    ctx.fillStyle = "#fff"; ctx.font = "900 16px system-ui"; ctx.fillText(button, W / 2, 360);
-    ctx.fillStyle = "#64748b"; ctx.font = "700 12px system-ui"; ctx.fillText("Tap canvas or press Space", W / 2, 388);
+
+    // Step 2: gold "NEW BEST!" badge above the play-again button
+    if (state === "gameover" && newBest) {
+      ctx.fillStyle = "#fbbf24";
+      roundRect(W / 2 - 62, 310, 124, 26, 13); ctx.fill();
+      ctx.fillStyle = "#0f172a"; ctx.font = "900 13px system-ui";
+      ctx.fillText("★ NEW BEST! ★", W / 2, 327);
+    }
+
+    const btnY = state === "gameover" && newBest ? 346 : 330;
+    ctx.fillStyle = "#f97316"; roundRect(92, btnY, W - 184, 48, 24); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.font = "900 16px system-ui"; ctx.fillText(button, W / 2, btnY + 30);
+    ctx.fillStyle = "#64748b"; ctx.font = "700 12px system-ui"; ctx.fillText("Tap canvas or press Space", W / 2, btnY + 54);
     drawSkinSelector();
     ctx.restore();
   }
@@ -590,7 +769,8 @@
   function draw() {
     ctx.save();
     if (shake > 0) ctx.translate(rand(-shake, shake) * 0.45, rand(-shake, shake) * 0.45);
-    const night = difficulty();
+    // Step 5: clamp difficulty to 1 for the sky colour so it stays night at 65+
+    const night = Math.min(1, difficulty());
     const sky = ctx.createLinearGradient(0, 0, 0, SKY_H);
     sky.addColorStop(0, night > 0.55 ? "#312e81" : "#60a5fa");
     sky.addColorStop(0.55, night > 0.55 ? "#4338ca" : "#7dd3fc");
@@ -645,6 +825,8 @@
     event?.preventDefault?.();
     muted = !muted;
     localStorage.setItem("flappy-power-muted", muted ? "1" : "0");
+    // Step 9: sync ambient gain with mute toggle
+    if (ambientGain) ambientGain.gain.setTargetAtTime(muted ? 0 : 0.008, audioCtx.currentTime, 0.3);
     updateButtons();
   }
 
@@ -707,9 +889,12 @@
     get score() { return score; },
     get best() { return best; },
     get combo() { return combo; },
+    get multiplier() { return comboMultiplier(); },
+    get prestige() { return prestige(); },
     get skin() { return { selectedSkin, unlocked: unlockedSkinCount(), current: skin().name }; },
     get active() { return { ...active, shieldGrace }; },
     get pipes() { return pipes.length; },
+    get missions() { return activeMissions.map((m) => ({ label: m.label, done: m.test(missionStats) })); },
     start: () => inputStart(),
     reset: () => resetWorld(false),
     setBest: (value) => { best = Number(value); localStorage.setItem("flappy-power-best", String(best)); return unlockedSkinCount(); },
