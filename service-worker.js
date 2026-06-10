@@ -1,4 +1,4 @@
-const CACHE = "flappy-power-v2";
+const CACHE = "flappy-power-v3";
 const ASSETS = ["./", "./index.html", "./style.css", "./game.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
