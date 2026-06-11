@@ -8,8 +8,17 @@
   const fullscreenBtn = document.getElementById("fullscreenBtn");
   const shareBtn = document.getElementById("shareBtn");
 
-  const W = canvas.width;
-  const H = canvas.height;
+  const W = 400;
+  const H = 600;
+
+  function setupHiDPI() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  setupHiDPI();
+  window.addEventListener("resize", setupHiDPI);
   const STEP = 1000 / 60;
   const GROUND_H = 76;
   const SKY_H = H - GROUND_H;
@@ -81,10 +90,13 @@
   let message = "";
   let powerupsCollected = 0;
   let shieldGrace = 0;
-  let newBest = false;        // Step 2: tracks if this run set a new best
-  let activeMissions = [];    // Step 8: missions for the current run
+  let newBest = false;
+  let activeMissions = [];
   let audioCtx = null;
-  let ambientGain = null;     // Step 9: gain node for the ambient bass loop
+  let ambientGain = null;
+  let ambientOsc = null;
+  let spawnTimer = 0;
+  let gameoverLock = 0;
   let lastUnlockedIndex = unlockedSkinCount() - 1;
 
   const keys = { down: false, holdTicks: 0 };
@@ -167,9 +179,10 @@
     activeMissions = pickMissions();
     if (startPlaying) {
       spawnPipe();
-      // Step 9: fade ambient back in when a run starts
+      spawnTimer = pipeSpawnTicks();
       if (ambientGain) ambientGain.gain.setTargetAtTime(0.008, audioCtx.currentTime, 0.5);
     }
+    gameoverLock = 0;
     updateButtons();
   }
 
@@ -185,17 +198,16 @@
     if (audioCtx?.state === "suspended") audioCtx.resume().then(() => { if (!ambientGain) startAmbient(); });
   }
 
-  // Step 9: looping low-frequency bass pad for atmosphere
   function startAmbient() {
     if (!audioCtx || ambientGain || muted) return;
-    const osc = audioCtx.createOscillator();
+    ambientOsc = audioCtx.createOscillator();
     ambientGain = audioCtx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = 82;
+    ambientOsc.type = "sine";
+    ambientOsc.frequency.value = 82;
     ambientGain.gain.value = 0.008;
-    osc.connect(ambientGain);
+    ambientOsc.connect(ambientGain);
     ambientGain.connect(audioCtx.destination);
-    osc.start();
+    ambientOsc.start();
   }
 
   function beep(freq = 440, duration = 0.08, type = "sine", gain = 0.045) {
@@ -334,11 +346,11 @@
     combo = 0;
     shake = 18;
     flash = 22;
+    gameoverLock = 24;
     checkUnlocks();
     addParticles(bird.x, bird.y, "#fb7185", 34, 5);
     beep(130, 0.22, "sawtooth", 0.045);
     vibrate(20);
-    // Step 9: fade ambient out on game over
     if (ambientGain) ambientGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.8);
     updateButtons();
   }
@@ -358,6 +370,7 @@
     keys.holdTicks = HOLD_TICKS;
     inputBuffer = BUFFER_TICKS;
     if (state === "menu" || state === "gameover") {
+      if (state === "gameover" && gameoverLock > 0) return;
       resetWorld(true);
       inputBuffer = BUFFER_TICKS;
     } else if (state === "paused") {
@@ -393,7 +406,8 @@
     bird.y += bird.vy;
     bird.rot = clamp(bird.vy / 9, -0.55, 1.25);
 
-    if (tick % pipeSpawnTicks() === 0) spawnPipe();
+    spawnTimer -= 1;
+    if (spawnTimer <= 0) { spawnPipe(); spawnTimer = pipeSpawnTicks(); }
     const speed = pipeSpeed();
     for (const pipe of pipes) {
       pipe.x -= speed;
@@ -509,6 +523,7 @@
       tick += 1;
       if (flash > 0) flash -= 1;
       if (shake > 0) shake -= 1;
+      if (gameoverLock > 0) gameoverLock -= 1;
       updateAmbient();
       bird.y += Math.sin(tick * 0.05) * 0.18;
       bird.rot = Math.sin(tick * 0.04) * 0.08;
@@ -818,6 +833,9 @@
     event?.preventDefault?.();
     if (state === "playing") state = "paused";
     else if (state === "paused") state = "playing";
+    if (ambientGain && audioCtx) {
+      ambientGain.gain.setTargetAtTime(state === "playing" ? 0.008 : 0, audioCtx.currentTime, 0.3);
+    }
     updateButtons();
   }
 
@@ -825,8 +843,10 @@
     event?.preventDefault?.();
     muted = !muted;
     localStorage.setItem("flappy-power-muted", muted ? "1" : "0");
-    // Step 9: sync ambient gain with mute toggle
-    if (ambientGain) ambientGain.gain.setTargetAtTime(muted ? 0 : 0.008, audioCtx.currentTime, 0.3);
+    if (audioCtx) {
+      if (muted) audioCtx.suspend();
+      else audioCtx.resume();
+    }
     updateButtons();
   }
 
