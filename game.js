@@ -66,7 +66,27 @@
     slow:   { label: "Slow",   color: "#a78bfa", duration: 360, icon: "⏱" },
     bonus:  { label: "+3",     color: "#fbbf24", duration: 0,   icon: "+" },
     shrink: { label: "Shrink", color: "#69db7c", duration: 360, icon: "⚪" },
+    magnet: { label: "Magnet", color: "#e879f9", duration: 360, icon: "U"  },
+    ghost:  { label: "Ghost",  color: "#f8fafc", duration: 240, icon: "◌"  },
+    double: { label: "2×",     color: "#facc15", duration: 480, icon: "×2" },
+    rocket: { label: "Rocket", color: "#ef4444", duration: 150, icon: "▶"  },
   };
+
+  const ORB_WEIGHTS = { shield: 18, slow: 14, bonus: 16, shrink: 14, magnet: 14, ghost: 10, double: 8, rocket: 6 };
+  function pickOrbType() {
+    const total = Object.values(ORB_WEIGHTS).reduce((a, b) => a + b, 0);
+    let roll = Math.random() * total;
+    for (const [type, w] of Object.entries(ORB_WEIGHTS)) { roll -= w; if (roll <= 0) return type; }
+    return "bonus";
+  }
+
+  const DIFFICULTIES = {
+    chill:   { label: "Chill",   speed: 0.85, gap: +24, movingFrom: 999, coinMult: 1 },
+    classic: { label: "Classic", speed: 1.0,  gap: 0,   movingFrom: 30,  coinMult: 1 },
+    insane:  { label: "Insane",  speed: 1.15, gap: -12, movingFrom: 10,  coinMult: 2 },
+  };
+  let difficultyKey = localStorage.getItem("flappy-power-diff") || "classic";
+  function diff() { return DIFFICULTIES[difficultyKey]; }
 
   const SKINS = [
     { name: "Sunny",  unlock: 0,  body: "#facc15", wing: "#f59e0b", beak: "#fb923c", eye: "#111827", glow: "#fde68a" },
@@ -143,6 +163,12 @@
   let weatherParticles = [];
   let farLayer = [];
   let fgLayer = [];
+  let coins = [];
+  let runCoins = 0;
+  let totalCoins = Number(localStorage.getItem("flappy-power-coins") || 0);
+  let reviveUsed = false;
+  let reviveWindow = 0;
+  let reviveTaps = 0;
   let lastUnlockedIndex = unlockedSkinCount() - 1;
 
   const keys = { down: false, holdTicks: 0 };
@@ -183,9 +209,10 @@
 
   function pipeSpeed() {
     const d = Math.min(difficulty(), 2.5);
-    return (BASE_PIPE_SPEED + d * 1.42) * (active.slow > 0 ? 0.58 : 1);
+    const rocketMult = active.rocket > 0 ? 2 : 1;
+    return (BASE_PIPE_SPEED + d * 1.42) * (active.slow > 0 ? 0.58 : 1) * diff().speed * rocketMult;
   }
-  function pipeGap() { return Math.max(104, BASE_PIPE_GAP - Math.min(difficulty(), 1) * 34); }
+  function pipeGap() { return Math.max(104, BASE_PIPE_GAP - Math.min(difficulty(), 1) * 34 + diff().gap); }
   function pipeSpawnTicks() { return Math.max(62, Math.round(BASE_SPAWN_TICKS - Math.min(difficulty(), 1) * 20)); }
   function birdRadius() { return active.shrink > 0 ? bird.r * SHRINK_SCALE : bird.r; }
   function unlockedSkinCount() { return clamp(Math.floor(best / 10) + 1, 1, SKINS.length); }
@@ -229,8 +256,13 @@
     keys.down = false;
     keys.holdTicks = 0;
     Object.assign(bird, { x: 104, y: 250, vy: 0, rot: 0, wing: 0, alive: true, deathSpin: 0 });
-    active = { shield: 0, slow: 0, shrink: 0 };
+    active = { shield: 0, slow: 0, shrink: 0, magnet: 0, ghost: 0, double: 0, rocket: 0 };
     pipes = [];
+    coins = [];
+    runCoins = 0;
+    reviveUsed = false;
+    reviveWindow = 0;
+    reviveTaps = 0;
     for (const p of particles) p.alive = false;
     trail = [];
     timeScale = 1;
@@ -405,8 +437,7 @@
     const gap = pipeGap();
     const margin = 54;
     const gapY = rand(margin + gap / 2, SKY_H - margin - gap / 2);
-    // Step 6: pipes move vertically once score >= 30
-    const moving = score >= 30;
+    const moving = score >= diff().movingFrom;
     const pipe = {
       x: W + 22,
       gapY,
@@ -420,17 +451,25 @@
       moveSpeed: moving ? rand(0.022, 0.038) : 0,
     };
     if (Math.random() < ORB_CHANCE) {
-      const types = Object.keys(POWERUPS);
       const orbOffsetY = rand(-gap * 0.27, gap * 0.27);
       pipe.orb = {
         x: pipe.x + pipe.w / 2,
         y: gapY + orbOffsetY,
         orbOffsetY,
         r: 12,
-        type: types[Math.floor(Math.random() * types.length)],
+        type: pickOrbType(),
         collected: false,
         pulse: rand(0, Math.PI * 2),
       };
+    } else if (Math.random() < 0.4) {
+      const n = 3 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < n; i++) {
+        coins.push({
+          x: pipe.x + pipe.w + 40 + i * 26,
+          y: gapY + Math.sin((i / (n - 1)) * Math.PI) * -30,
+          collected: false, spin: rand(0, Math.PI * 2),
+        });
+      }
     }
     pipes.push(pipe);
   }
@@ -474,6 +513,9 @@
   }
 
   function checkUnlocks() {
+    totalCoins += runCoins;
+    runCoins = 0;
+    localStorage.setItem("flappy-power-coins", String(totalCoins));
     const previousBest = best;
     best = Math.max(best, score);
     localStorage.setItem("flappy-power-best", String(best));
@@ -546,6 +588,24 @@
     keys.down = true;
     keys.holdTicks = HOLD_TICKS;
     inputBuffer = BUFFER_TICKS;
+    if (state === "reviveOffer") {
+      reviveTaps += 1;
+      if (reviveTaps >= 5) {
+        reviveUsed = true;
+        let cost = 50;
+        if (runCoins >= cost) { runCoins -= cost; }
+        else { const rem = cost - runCoins; runCoins = 0; totalCoins -= rem; }
+        totalCoins = Math.max(0, totalCoins);
+        localStorage.setItem("flappy-power-coins", String(totalCoins));
+        state = "playing";
+        bird.y = H * 0.4; bird.vy = FLAP * 0.6; bird.alive = true; bird.rot = 0; bird.deathSpin = 0;
+        shieldGrace = 90; flash = 14; timeScale = 1;
+        pipes = pipes.filter((p) => p.x > bird.x + 60 || p.x + p.w < bird.x - 60);
+        music.start();
+        showMessage("Revived!", 90);
+      }
+      return;
+    }
     if (state === "menu" || state === "gameover") {
       if (state === "gameover" && gameoverLock > 0) return;
       resetWorld(true);
@@ -571,7 +631,10 @@
     if (shake > 0) shake -= 1;
     if (shieldGrace > 0) shieldGrace -= 1;
     if (bird.wing > 0) bird.wing -= 1;
+    const wasGhost = active.ghost > 0;
+    const wasRocket = active.rocket > 0;
     for (const key of Object.keys(active)) if (active[key] > 0) active[key] -= 1;
+    if ((wasGhost && active.ghost <= 0) || (wasRocket && active.rocket <= 0)) shieldGrace = Math.max(shieldGrace, 30);
 
     if (inputBuffer > 0 && flapCooldown <= 0) flap();
     if (keys.down && keys.holdTicks > 0 && bird.vy < 0) {
@@ -579,8 +642,14 @@
       keys.holdTicks -= 1;
     }
 
-    bird.vy = Math.min(MAX_FALL, bird.vy + GRAVITY * (currentBiome().gravity ?? 1));
-    bird.y += bird.vy;
+    if (active.rocket > 0) {
+      bird.vy = 0;
+      bird.y += (H * 0.42 - bird.y) * 0.06;
+      if (tick % 2 === 0) addParticles(bird.x - 10, bird.y, "#ef4444", 2, 1.2);
+    } else {
+      bird.vy = Math.min(MAX_FALL, bird.vy + GRAVITY * (currentBiome().gravity ?? 1));
+      bird.y += bird.vy;
+    }
     bird.rot = clamp(bird.vy / 9, -0.55, 1.25);
 
     spawnTimer -= 1;
@@ -605,9 +674,9 @@
       if (!pipe.passed && pipe.x + pipe.w < bird.x - birdRadius()) {
         pipe.passed = true;
 
-        // Step 3: score scales with combo multiplier
         const mult = comboMultiplier();
-        score += mult;
+        const pts = mult * (active.double > 0 ? 2 : 1);
+        score += pts;
         combo += 1;
         missionStats.pipesPassed += 1;
         missionStats.score = score;
@@ -615,7 +684,7 @@
         if (mult > missionStats.maxMultiplier) missionStats.maxMultiplier = mult;
         flash = 5;
         scorePulse = 10;
-        spawnParticle({ x: pipe.x + pipe.w / 2, y: pipe.gapY, vx: 0, vy: -1.1, life: 40, max: 40, color: "#fff", r: 0, text: `+${mult}` });
+        spawnParticle({ x: pipe.x + pipe.w / 2, y: pipe.gapY, vx: 0, vy: -1.1, life: 40, max: 40, color: "#fff", r: 0, text: `+${pts}` });
 
         // near-miss bonus — tight vertical clearance earns +1
         const topH = pipe.gapY - pipe.gap / 2;
@@ -624,7 +693,7 @@
         const botClear = botY - (bird.y + birdRadius());
         const minClear = Math.min(topClear, botClear);
         if (minClear >= 0 && minClear < NEAR_MISS_THRESHOLD) {
-          score += 1;
+          score += active.double > 0 ? 2 : 1;
           missionStats.score = score;
           showMessage("Close! +1", 60);
           addParticles(bird.x, bird.y, "#ffffff", 8, 2.2);
@@ -651,7 +720,8 @@
       const topH = pipe.gapY - pipe.gap / 2;
       const botY = pipe.gapY + pipe.gap / 2;
       const r = Math.max(4, birdRadius() - HITBOX_PAD);
-      if (shieldGrace <= 0 && (circleRectCollision(bird.x, bird.y, r, pipe.x, 0, pipe.w, topH) || circleRectCollision(bird.x, bird.y, r, pipe.x, botY, pipe.w, SKY_H - botY))) {
+      if (shieldGrace <= 0 && active.ghost <= 0 && active.rocket <= 0 &&
+          (circleRectCollision(bird.x, bird.y, r, pipe.x, 0, pipe.w, topH) || circleRectCollision(bird.x, bird.y, r, pipe.x, botY, pipe.w, SKY_H - botY))) {
         crash(pipe);
         break;
       }
@@ -668,6 +738,26 @@
         }
       }
     }
+
+    const speed2 = pipeSpeed();
+    for (const c of coins) {
+      c.x -= speed2;
+      c.spin += 0.15;
+      if (active.magnet > 0) {
+        const dx = bird.x - c.x, dy = bird.y - c.y;
+        if (dx * dx + dy * dy < 90 * 90) { c.x += dx * 0.08; c.y += dy * 0.08; }
+      }
+      if (!c.collected) {
+        const dx = bird.x - c.x, dy = bird.y - c.y;
+        if (dx * dx + dy * dy < (birdRadius() + 7) ** 2) {
+          c.collected = true;
+          runCoins += diff().coinMult;
+          spawnParticle({ x: c.x, y: c.y, vx: 0, vy: -1, life: 30, max: 30, color: "#fde047", r: 0, text: "+1" });
+          beep(1320 + runCoins * 8, 0.04, "sine", 0.02);
+        }
+      }
+    }
+    coins = coins.filter((c) => !c.collected && c.x > -20);
 
     const radius = birdRadius();
     if (bird.y - radius < 0) {
@@ -707,11 +797,31 @@
         bird.vy = 0;
       }
       if (dyingTimer > 60) {
-        state = "gameover";
-        gameoverLock = 24;
-        checkUnlocks();
-        updateButtons();
+        if (!reviveUsed && totalCoins + runCoins >= 50) {
+          state = "reviveOffer";
+          reviveWindow = 120;
+          reviveTaps = 0;
+        } else {
+          state = "gameover";
+          gameoverLock = 24;
+          checkUnlocks();
+          updateButtons();
+        }
       }
+    }
+    updateAmbient();
+  }
+
+  function updateReviveOffer() {
+    tick += 1;
+    reviveWindow -= 1;
+    if (reviveWindow <= 0) {
+      totalCoins += runCoins;
+      localStorage.setItem("flappy-power-coins", String(totalCoins));
+      state = "gameover";
+      gameoverLock = 24;
+      checkUnlocks();
+      updateButtons();
     }
     updateAmbient();
   }
@@ -763,6 +873,7 @@
   function update() {
     if (state === "playing") updatePlaying();
     else if (state === "dying") updateDying();
+    else if (state === "reviveOffer") updateReviveOffer();
     else {
       tick += 1;
       if (flash > 0) flash -= 1;
@@ -982,6 +1093,9 @@
       x -= 8;
     }
 
+    ctx.fillStyle = "#fde047"; ctx.font = "700 11px system-ui"; ctx.textAlign = "left";
+    ctx.fillText(`🪙 ${runCoins}`, 28, 56);
+
     drawMissions();
     if (messageTimer > 0) {
       ctx.globalAlpha = Math.min(1, messageTimer / 18);
@@ -1052,6 +1166,21 @@
     ctx.fillStyle = "#f97316"; roundRect(92, btnY, W - 184, 48, 24); ctx.fill();
     ctx.fillStyle = "#fff"; ctx.font = "900 16px system-ui"; ctx.fillText(button, W / 2, btnY + 30);
     ctx.fillStyle = "#64748b"; ctx.font = "700 12px system-ui"; ctx.fillText("Tap canvas or press Space", W / 2, btnY + 54);
+    if (state === "menu") {
+      const diffKeys = Object.keys(DIFFICULTIES);
+      const pillW = 72, pillH = 26, pillGap = 8;
+      const totalW = diffKeys.length * pillW + (diffKeys.length - 1) * pillGap;
+      let px = W / 2 - totalW / 2;
+      ctx.font = "800 11px system-ui"; ctx.textAlign = "center";
+      diffKeys.forEach((k) => {
+        const isActive = k === difficultyKey;
+        ctx.fillStyle = isActive ? "#f97316" : "rgba(15,23,42,.18)";
+        roundRect(px, 386, pillW, pillH, 13); ctx.fill();
+        ctx.fillStyle = isActive ? "#fff" : "#334155";
+        ctx.fillText(DIFFICULTIES[k].label, px + pillW / 2, 403);
+        px += pillW + pillGap;
+      });
+    }
     drawSkinSelector();
     ctx.restore();
   }
@@ -1065,6 +1194,47 @@
       else line = next;
     }
     if (line) ctx.fillText(line, x, y);
+  }
+
+  function drawCoins() {
+    for (const c of coins) {
+      if (c.collected) continue;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.scale(Math.abs(Math.cos(c.spin)), 1);
+      ctx.fillStyle = "#fde047";
+      ctx.strokeStyle = "#b45309";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#92400e";
+      ctx.font = "bold 7px system-ui";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("$", 0, 0.5);
+      ctx.restore();
+    }
+  }
+
+  function drawReviveOffer() {
+    ctx.save();
+    ctx.fillStyle = "rgba(15, 23, 42, .7)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(255,255,255,.95)"; roundRect(40, 160, W - 80, 220, 24); ctx.fill();
+    ctx.fillStyle = "#0f172a"; ctx.textAlign = "center"; ctx.font = "900 24px system-ui";
+    ctx.fillText("REVIVE?", W / 2, 210);
+    ctx.font = "600 13px system-ui";
+    ctx.fillText("Tap 5 times fast — costs 50 🪙", W / 2, 240);
+    ctx.font = "900 28px system-ui"; ctx.fillStyle = "#f97316";
+    ctx.fillText(`${reviveTaps} / 5`, W / 2, 282);
+    const barW = W - 120;
+    const barX = 60;
+    ctx.fillStyle = "rgba(15,23,42,.15)"; roundRect(barX, 300, barW, 12, 6); ctx.fill();
+    ctx.fillStyle = "#38bdf8"; roundRect(barX, 300, barW * reviveWindow / 120, 12, 6); ctx.fill();
+    ctx.fillStyle = "#64748b"; ctx.font = "600 12px system-ui";
+    ctx.fillText(`🪙 ${totalCoins + runCoins} available`, W / 2, 340);
+    ctx.restore();
   }
 
   function draw() {
@@ -1103,6 +1273,7 @@
     for (const h of hills) drawHill(h, biome);
     for (const pipe of pipes) drawPipe(pipe);
     drawGround();
+    drawCoins();
     const trailColor = prestige() > 0 ? prestigeColor() : skin().glow;
     trail.forEach((t, i) => {
       ctx.globalAlpha = (i + 1) / TRAIL_LEN * 0.25;
@@ -1129,9 +1300,11 @@
     }
     drawHud();
     if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash / 70})`; ctx.fillRect(0, 0, W, H); }
-    if (state === "menu") drawOverlay("Flappy Power", "Dodge pipes, collect orbs, build combos, complete missions, and unlock a new bird skin every 10 best-score points.", "Start game");
-    else if (state === "gameover") drawOverlay("Game over", `Score ${score} · Best ${best}. ${unlockedSkinCount()} / ${SKINS.length} skins unlocked.`, "Play again");
+    if (state === "menu") drawOverlay("Flappy Power", "Dodge pipes, collect orbs, build combos, unlock skins. Earn coins every run!", "Start game");
+    else if (state === "gameover") drawOverlay("Game over", `Score ${score} · Best ${best} · 🪙 ${totalCoins}`, "Play again");
     else if (state === "paused") drawOverlay("Paused", "Take a break. Tap the canvas or Pause button to continue your run.", "Resume");
+    else if (state === "reviveOffer") drawReviveOffer();
+    else if (state === "dying") { /* world renders, no overlay */ }
     ctx.restore();
   }
 
@@ -1194,6 +1367,21 @@
     const rect = canvas.getBoundingClientRect();
     const x = (clientX - rect.left) * (W / rect.width);
     const y = (clientY - rect.top) * (H / rect.height);
+    if (state === "menu" && y >= 386 && y <= 412) {
+      const diffKeys = Object.keys(DIFFICULTIES);
+      const pillW = 72, pillGap = 8;
+      const totalW = diffKeys.length * pillW + (diffKeys.length - 1) * pillGap;
+      let px = W / 2 - totalW / 2;
+      for (const k of diffKeys) {
+        if (x >= px && x <= px + pillW) {
+          difficultyKey = k;
+          localStorage.setItem("flappy-power-diff", k);
+          showMessage(`${DIFFICULTIES[k].label} mode!`, 80);
+          return true;
+        }
+        px += pillW + pillGap;
+      }
+    }
     if ((state !== "menu" && state !== "gameover") || y < 438 || y > 496) return false;
     const unlocked = unlockedSkinCount();
     const idx = Math.round((x - 48) / 43);
