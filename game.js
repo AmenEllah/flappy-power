@@ -40,6 +40,27 @@
   const NEAR_MISS_THRESHOLD = 14;
   const PRESTIGE_TRAILS = ["#f0abfc", "#fde68a", "#67e8f9", "#fb7185", "#a78bfa", "#fdba74"];
 
+  const BIOMES = [
+    { name: "Meadow",    sky: ["#60a5fa", "#7dd3fc", "#bae6fd"], hill: "rgba(34,197,94,.24)",
+      pipeA: "#16a34a", pipeB: "#86efac", pipeC: "#15803d", groundA: "#f59e0b", groundB: "#22c55e", stars: false, weather: null },
+    { name: "Sunset",   sky: ["#7c2d12", "#fb923c", "#fde68a"], hill: "rgba(154,52,18,.30)",
+      pipeA: "#b45309", pipeB: "#fcd34d", pipeC: "#92400e", groundA: "#c2410c", groundB: "#fb923c", stars: false, weather: null },
+    { name: "Night City", sky: ["#0f172a", "#1e293b", "#334155"], hill: "rgba(2,6,23,.55)",
+      pipeA: "#0e7490", pipeB: "#67e8f9", pipeC: "#155e75", groundA: "#1e293b", groundB: "#475569", stars: true, weather: null },
+    { name: "Snow Peaks", sky: ["#475569", "#94a3b8", "#e2e8f0"], hill: "rgba(241,245,249,.5)",
+      pipeA: "#0369a1", pipeB: "#bae6fd", pipeC: "#075985", groundA: "#cbd5e1", groundB: "#f8fafc", stars: false, weather: "snow" },
+    { name: "Space",    sky: ["#020617", "#1e1b4b", "#312e81"], hill: "rgba(99,102,241,.18)",
+      pipeA: "#6d28d9", pipeB: "#c4b5fd", pipeC: "#4c1d95", groundA: "#1e1b4b", groundB: "#6366f1", stars: true, weather: null, gravity: 0.95 },
+  ];
+
+  function lerpColor(a, b, t) {
+    const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    const r = Math.round(((pa >> 16) & 255) + (((pb >> 16) & 255) - ((pa >> 16) & 255)) * t);
+    const g = Math.round(((pa >> 8) & 255) + (((pb >> 8) & 255) - ((pa >> 8) & 255)) * t);
+    const bl = Math.round((pa & 255) + ((pb & 255) - (pa & 255)) * t);
+    return `rgb(${r},${g},${bl})`;
+  }
+
   const POWERUPS = {
     shield: { label: "Shield", color: "#38bdf8", duration: 540, icon: "◆" },
     slow:   { label: "Slow",   color: "#a78bfa", duration: 360, icon: "⏱" },
@@ -103,6 +124,11 @@
   let camY = 0;
   let shakeAngle = 0;
   let blinkTimer = 180;
+  let prevBiomeIdx = 0;
+  let biomeBlend = 1;
+  let weatherParticles = [];
+  let farLayer = [];
+  let fgLayer = [];
   let lastUnlockedIndex = unlockedSkinCount() - 1;
 
   const keys = { down: false, holdTicks: 0 };
@@ -154,6 +180,8 @@
   // Step 7: prestige level (every 25 pts past score 80) and its trail colour
   function prestige() { return score > 80 ? Math.floor((score - 80) / 25) : 0; }
   function prestigeColor() { return PRESTIGE_TRAILS[prestige() % PRESTIGE_TRAILS.length]; }
+  function biomeIndex() { return Math.floor(score / 25) % BIOMES.length; }
+  function currentBiome() { return BIOMES[biomeIndex()]; }
 
   function pickMissions() {
     const pool = [...MISSION_POOL];
@@ -198,6 +226,11 @@
     clouds = Array.from({ length: 7 }, (_, i) => ({ x: i * 72 + rand(0, 28), y: rand(38, 190), s: rand(0.55, 1.25), v: rand(0.10, 0.24) }));
     hills = Array.from({ length: 5 }, (_, i) => ({ x: i * 108 - 20, y: SKY_H - rand(30, 80), s: rand(0.75, 1.35), v: rand(0.34, 0.48) }));
     stars = Array.from({ length: 26 }, () => ({ x: rand(0, W), y: rand(16, 190), tw: rand(0, Math.PI * 2) }));
+    farLayer = Array.from({ length: 4 }, (_, i) => ({ x: i * 110, y: SKY_H - rand(60, 120), w: rand(80, 140), v: 0.28 }));
+    fgLayer = Array.from({ length: 6 }, (_, i) => ({ x: i * 70, v: 1.0, kind: 0 }));
+    weatherParticles = [];
+    prevBiomeIdx = 0;
+    biomeBlend = 1;
     Object.assign(missionStats, { pipesPassed: 0, powerupsCollected: 0, maxCombo: 0, shieldsCollected: 0, score: 0, maxMultiplier: 1 });
     activeMissions = pickMissions();
     if (startPlaying) {
@@ -428,7 +461,7 @@
       keys.holdTicks -= 1;
     }
 
-    bird.vy = Math.min(MAX_FALL, bird.vy + GRAVITY);
+    bird.vy = Math.min(MAX_FALL, bird.vy + GRAVITY * (currentBiome().gravity ?? 1));
     bird.y += bird.vy;
     bird.rot = clamp(bird.vy / 9, -0.55, 1.25);
 
@@ -562,13 +595,38 @@
   }
 
   function updateAmbient() {
+    const speedMult = pipeSpeed() / BASE_PIPE_SPEED;
     for (const c of clouds) {
-      c.x -= c.v;
+      c.x -= c.v * speedMult;
       if (c.x < -80) Object.assign(c, { x: W + 80, y: rand(38, 190), s: rand(0.55, 1.25), v: rand(0.10, 0.24) });
     }
     for (const h of hills) {
-      h.x -= h.v;
+      h.x -= h.v * speedMult;
       if (h.x < -130) Object.assign(h, { x: W + rand(20, 70), y: SKY_H - rand(30, 80), s: rand(0.75, 1.35) });
+    }
+    for (const f of farLayer) {
+      f.x -= f.v * speedMult * 0.45;
+      if (f.x + f.w < -20) Object.assign(f, { x: W + 20, y: SKY_H - rand(60, 120), w: rand(80, 140) });
+    }
+    for (const f of fgLayer) {
+      f.x -= f.v * speedMult * 1.2;
+      if (f.x < -20) f.x = W + rand(0, 30);
+    }
+    const bi = biomeIndex();
+    if (bi !== prevBiomeIdx) { prevBiomeIdx = bi; biomeBlend = 0; showMessage(`${BIOMES[bi].name}!`, 90); }
+    biomeBlend = Math.min(1, biomeBlend + 1 / 120);
+    const biome = currentBiome();
+    if (biome.weather === "snow") {
+      if (weatherParticles.length < 40 && Math.random() < 0.5) {
+        weatherParticles.push({ x: rand(0, W), y: 0, vx: rand(-0.3, 0.3), vy: rand(0.8, 1.4), size: rand(2, 4) });
+      }
+      for (const s of weatherParticles) {
+        s.x += s.vx + Math.sin(tick * 0.02 + s.y) * 0.3;
+        s.y += s.vy;
+      }
+      weatherParticles = weatherParticles.filter((s) => s.y < SKY_H);
+    } else {
+      weatherParticles = [];
     }
     for (const p of particles) {
       if (!p.alive) continue;
@@ -617,28 +675,36 @@
     ctx.restore();
   }
 
-  function drawHill(h) {
-    ctx.fillStyle = "rgba(34, 197, 94, .24)";
+  function drawHill(h, biome) {
+    ctx.fillStyle = biome ? biome.hill : "rgba(34,197,94,.24)";
     ctx.beginPath();
     ctx.ellipse(h.x, h.y + 70 * h.s, 72 * h.s, 82 * h.s, 0, Math.PI, 0);
     ctx.fill();
   }
 
   function drawPipe(pipe) {
+    const biome = currentBiome();
     const topH = pipe.gapY - pipe.gap / 2;
     const botY = pipe.gapY + pipe.gap / 2;
-    // Step 6: moving pipes use blue gradient to warn the player
     const moving = pipe.moveAmp > 0;
     const grad = ctx.createLinearGradient(pipe.x, 0, pipe.x + pipe.w, 0);
-    grad.addColorStop(0,   moving ? "#1d4ed8" : "#16a34a");
-    grad.addColorStop(0.5, moving ? "#93c5fd" : "#86efac");
-    grad.addColorStop(1,   moving ? "#1e40af" : "#15803d");
+    grad.addColorStop(0,   moving ? "#1d4ed8" : biome.pipeA);
+    grad.addColorStop(0.5, moving ? "#93c5fd" : biome.pipeB);
+    grad.addColorStop(1,   moving ? "#1e40af" : biome.pipeC);
     ctx.fillStyle = grad;
     roundRect(pipe.x, -12, pipe.w, topH + 12, 10); ctx.fill();
     roundRect(pipe.x - 6, topH - 22, pipe.w + 12, 24, 9); ctx.fill();
     roundRect(pipe.x, botY, pipe.w, SKY_H - botY + 12, 10); ctx.fill();
     roundRect(pipe.x - 6, botY, pipe.w + 12, 24, 9); ctx.fill();
-    ctx.strokeStyle = moving ? "rgba(30, 64, 175, .5)" : "rgba(15, 118, 53, .5)";
+    if (moving) {
+      ctx.save();
+      ctx.globalAlpha = 0.18; ctx.strokeStyle = "#fff"; ctx.lineWidth = 6;
+      for (let sx = pipe.x - 64; sx < pipe.x + 128; sx += 18) {
+        ctx.beginPath(); ctx.moveTo(sx, topH); ctx.lineTo(sx + 64, 0); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.strokeStyle = moving ? "rgba(30,64,175,.5)" : "rgba(15,118,53,.5)";
     ctx.lineWidth = 3;
     ctx.strokeRect(pipe.x + 10, 0, 1, Math.max(0, topH - 22));
     ctx.strokeRect(pipe.x + 10, botY + 24, 1, Math.max(0, SKY_H - botY));
@@ -722,15 +788,41 @@
   }
 
   function drawGround() {
+    const biome = currentBiome();
     const y = SKY_H;
-    ctx.fillStyle = "#f59e0b";
+    ctx.fillStyle = biome.groundA;
     ctx.fillRect(0, y, W, GROUND_H);
-    ctx.fillStyle = "#22c55e";
+    ctx.fillStyle = biome.groundB;
     ctx.fillRect(0, y, W, 14);
-    ctx.fillStyle = "rgba(120, 53, 15, .22)";
+    ctx.fillStyle = "rgba(0,0,0,.12)";
     for (let x = -40 + ((tick * pipeSpeed()) % 40); x < W + 40; x += 40) {
       ctx.beginPath(); ctx.moveTo(x, y + 14); ctx.lineTo(x + 18, H); ctx.lineTo(x + 36, y + 14); ctx.fill();
     }
+    for (const f of fgLayer) {
+      ctx.fillStyle = biome.groundB;
+      ctx.beginPath();
+      ctx.moveTo(f.x, SKY_H);
+      ctx.lineTo(f.x + 5, SKY_H - 10);
+      ctx.lineTo(f.x + 10, SKY_H);
+      ctx.fill();
+    }
+    if (biome.weather === "snow") {
+      for (const s of weatherParticles) {
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = "#f0f9ff";
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const sh = clamp(1 - (SKY_H - bird.y) / SKY_H, 0.15, 1);
+    ctx.globalAlpha = 0.22 * sh;
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.ellipse(bird.x, SKY_H + 6, 18 * sh + 4, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   function drawHud() {
@@ -861,22 +953,32 @@
       ctx.translate(Math.cos(a) * rand(-m, m), Math.sin(a) * rand(-m, m));
     }
     ctx.translate(0, camY);
-    // Step 5: clamp difficulty to 1 for the sky colour so it stays night at 65+
-    const night = Math.min(1, difficulty());
+    const biome = currentBiome();
+    const prev = BIOMES[prevBiomeIdx === biomeIndex() ? biomeIndex() : prevBiomeIdx];
+    const bl = biomeBlend;
     const sky = ctx.createLinearGradient(0, 0, 0, SKY_H);
-    sky.addColorStop(0, night > 0.55 ? "#312e81" : "#60a5fa");
-    sky.addColorStop(0.55, night > 0.55 ? "#4338ca" : "#7dd3fc");
-    sky.addColorStop(1, night > 0.55 ? "#0f172a" : "#bae6fd");
+    sky.addColorStop(0,    lerpColor(prev.sky[0], biome.sky[0], bl));
+    sky.addColorStop(0.55, lerpColor(prev.sky[1], biome.sky[1], bl));
+    sky.addColorStop(1,    lerpColor(prev.sky[2], biome.sky[2], bl));
     ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
-    if (night > 0.45) {
+    if (biome.stars) {
       for (const s of stars) {
-        ctx.globalAlpha = 0.25 + Math.sin(tick * 0.04 + s.tw) * 0.2 + night * 0.35;
+        ctx.globalAlpha = (0.25 + Math.sin(tick * 0.04 + s.tw) * 0.2) * bl;
         ctx.fillStyle = "#fefce8"; ctx.fillRect(s.x, s.y, 2, 2);
       }
       ctx.globalAlpha = 1;
     }
+    for (const f of farLayer) {
+      ctx.fillStyle = biome.hill;
+      ctx.beginPath();
+      ctx.moveTo(f.x, SKY_H);
+      ctx.lineTo(f.x + f.w / 2, f.y);
+      ctx.lineTo(f.x + f.w, SKY_H);
+      ctx.closePath();
+      ctx.fill();
+    }
     for (const c of clouds) drawCloud(c);
-    for (const h of hills) drawHill(h);
+    for (const h of hills) drawHill(h, biome);
     for (const pipe of pipes) drawPipe(pipe);
     drawGround();
     const trailColor = prestige() > 0 ? prestigeColor() : skin().glow;
