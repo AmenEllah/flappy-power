@@ -1,5 +1,8 @@
 # Flappy Power — Expert Review & Improvement Plan
 
+> Each phase has a detailed step-by-step implementation guide in [`docs/`](docs/):
+> [Phase 1](docs/phase-1-foundation.md) · [Phase 2](docs/phase-2-juice.md) · [Phase 3](docs/phase-3-graphics.md) · [Phase 4](docs/phase-4-audio.md) · [Phase 5](docs/phase-5-gameplay.md) · [Phase 6](docs/phase-6-meta.md) · [Phase 7](docs/phase-7-social.md) · [Phase 8](docs/phase-8-polish.md)
+
 ## Part 1 — Review of the current build
 
 ### What's already good
