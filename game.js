@@ -8,6 +8,8 @@
   const fullscreenBtn = document.getElementById("fullscreenBtn");
   const shareBtn = document.getElementById("shareBtn");
   const dailyBtn = document.getElementById("dailyBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
+  let prevStateBeforeSettings = "menu";
 
   const W = 400;
   const H = 600;
@@ -213,6 +215,14 @@
   let totalCoins = save.coins;
   let lastRunDate = 0;
   let reviveUsed = false;
+  const reducedMotionMQ = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+  if (!save.settings) save.settings = {};
+  const settings = Object.assign({
+    shake: !(reducedMotionMQ?.matches),
+    flash: !(reducedMotionMQ?.matches),
+    hudLeft: true,
+  }, save.settings);
+  function saveSetting(k, v) { settings[k] = v; save.settings[k] = v; persist(); }
   let reviveWindow = 0;
   let reviveTaps = 0;
   let runFlaps = 0;
@@ -981,6 +991,7 @@
     if (state === "playing") updatePlaying();
     else if (state === "dying") updateDying();
     else if (state === "reviveOffer") updateReviveOffer();
+    else if (state === "settings") { tick += 1; updateAmbient(); }
     else {
       tick += 1;
       if (flash > 0) flash -= 1;
@@ -1051,21 +1062,39 @@
     if (pipe.orb && !pipe.orb.collected) drawOrb(pipe.orb);
   }
 
+  const ORB_SHAPES = { shield: "diamond", slow: "hex", bonus: "star", shrink: "circle", magnet: "ring", ghost: "dashedCircle", double: "square", rocket: "triangle" };
+  function drawOrbShape(s, x, y, r, type) {
+    s.beginPath();
+    if (type === "diamond") { s.moveTo(x, y - r); s.lineTo(x + r, y); s.lineTo(x, y + r); s.lineTo(x - r, y); s.closePath(); }
+    else if (type === "hex") { for (let i = 0; i < 6; i++) { const a = (i * Math.PI) / 3 - Math.PI / 6; (i === 0 ? s.moveTo : s.lineTo).call(s, x + Math.cos(a) * r, y + Math.sin(a) * r); } s.closePath(); }
+    else if (type === "star") { for (let i = 0; i < 10; i++) { const a = (i * Math.PI) / 5 - Math.PI / 2; const rr = i % 2 === 0 ? r : r * 0.45; (i === 0 ? s.moveTo : s.lineTo).call(s, x + Math.cos(a) * rr, y + Math.sin(a) * rr); } s.closePath(); }
+    else if (type === "square") { s.rect(x - r * 0.75, y - r * 0.75, r * 1.5, r * 1.5); }
+    else if (type === "triangle") { s.moveTo(x, y - r); s.lineTo(x + r, y + r * 0.7); s.lineTo(x - r, y + r * 0.7); s.closePath(); }
+    else { s.arc(x, y, r, 0, Math.PI * 2); }
+  }
+
   function drawOrb(orb) {
     const power = POWERUPS[orb.type];
     const pulse = Math.sin(orb.pulse) * 2;
+    const r = orb.r + pulse;
+    const shape = ORB_SHAPES[orb.type] || "circle";
     ctx.save();
-    ctx.shadowColor = power.color;
-    ctx.shadowBlur = 16;
+    ctx.shadowColor = power.color; ctx.shadowBlur = 16;
     ctx.fillStyle = power.color;
-    ctx.beginPath();
-    ctx.arc(orb.x, orb.y, orb.r + pulse, 0, Math.PI * 2);
-    ctx.fill();
+    if (shape === "ring") {
+      ctx.beginPath(); ctx.arc(orb.x, orb.y, r, 0, Math.PI * 2);
+      ctx.arc(orb.x, orb.y, r * 0.55, 0, Math.PI * 2, true); ctx.fill();
+    } else if (shape === "dashedCircle") {
+      ctx.setLineDash([4, 3]); ctx.strokeStyle = power.color; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(orb.x, orb.y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      drawOrbShape(ctx, orb.x, orb.y, r, shape); ctx.fill();
+    }
     ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(255,255,255,.86)";
-    ctx.font = "bold 15px system-ui";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(255,255,255,.9)";
+    ctx.font = "bold 13px system-ui";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(power.icon, orb.x, orb.y + 0.5);
     ctx.restore();
   }
@@ -1353,6 +1382,40 @@
     }
   }
 
+  const settingsHitRects = [];
+  function drawSettings() {
+    settingsHitRects.length = 0;
+    ctx.save();
+    ctx.fillStyle = "rgba(15,23,42,.7)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(255,255,255,.95)"; roundRect(30, 100, W - 60, 360, 24); ctx.fill();
+    ctx.fillStyle = "#0f172a"; ctx.textAlign = "center"; ctx.font = "900 22px system-ui";
+    ctx.fillText("Settings", W / 2, 140);
+    const rows = [
+      { label: "Screen shake", key: "shake" },
+      { label: "Flash effects", key: "flash" },
+      { label: "HUD on left",  key: "hudLeft" },
+    ];
+    rows.forEach((r, i) => {
+      const y = 175 + i * 52;
+      ctx.fillStyle = "#334155"; ctx.font = "700 14px system-ui"; ctx.textAlign = "left";
+      ctx.fillText(r.label, 60, y + 10);
+      const on = settings[r.key];
+      const bx = W - 100, by = y - 4;
+      ctx.fillStyle = on ? "#22c55e" : "#94a3b8";
+      roundRect(bx, by, 54, 28, 14); ctx.fill();
+      ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(on ? bx + 38 : bx + 16, by + 14, 10, 0, Math.PI * 2); ctx.fill();
+      settingsHitRects.push({ x: bx, y: by, w: 54, h: 28, key: r.key });
+    });
+    ctx.fillStyle = "#475569"; ctx.font = "700 12px system-ui"; ctx.textAlign = "center";
+    ctx.fillText(`Achievements: ${save.achievements.length} / ${ACHIEVEMENTS.length}`, W / 2, 380);
+    ctx.fillText(`Total coins: 🪙 ${totalCoins}  ·  Runs: ${save.lifetime.runs}`, W / 2, 400);
+    ctx.fillText(`Pipes: ${save.lifetime.pipes}  ·  Best: ${best}`, W / 2, 420);
+    ctx.fillStyle = "#f97316"; roundRect(W / 2 - 60, 430, 120, 36, 18); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.font = "800 14px system-ui"; ctx.fillText("Close", W / 2, 452);
+    settingsHitRects.push({ x: W / 2 - 60, y: 430, w: 120, h: 36, key: "_close" });
+    ctx.restore();
+  }
+
   function drawReviveOffer() {
     ctx.save();
     ctx.fillStyle = "rgba(15, 23, 42, .7)"; ctx.fillRect(0, 0, W, H);
@@ -1374,7 +1437,7 @@
 
   function draw() {
     ctx.save();
-    if (shake > 0) {
+    if (shake > 0 && settings.shake) {
       const a = shakeAngle + randFree(-0.5, 0.5);
       const m = shake * 0.45;
       ctx.translate(Math.cos(a) * randFree(-m, m), Math.sin(a) * randFree(-m, m));
@@ -1434,11 +1497,12 @@
       ctx.globalAlpha = 1;
     }
     drawHud();
-    if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash / 70})`; ctx.fillRect(0, 0, W, H); }
+    if (flash > 0 && settings.flash) { ctx.fillStyle = `rgba(255,255,255,${flash / 70})`; ctx.fillRect(0, 0, W, H); }
     if (state === "menu") drawOverlay("Flappy Power", "Dodge pipes, collect orbs, build combos, unlock skins. Earn coins every run!", "Start game");
     else if (state === "gameover") drawOverlay("Game over", `Score ${score} · Best ${best} · 🪙 ${totalCoins}`, "Play again");
     else if (state === "paused") drawOverlay("Paused", "Take a break. Tap the canvas or Pause button to continue your run.", "Resume");
     else if (state === "reviveOffer") drawReviveOffer();
+    else if (state === "settings") drawSettings();
     else if (state === "dying") { /* world renders, no overlay */ }
     ctx.restore();
   }
@@ -1541,6 +1605,16 @@
     const rect = canvas.getBoundingClientRect();
     const x = (clientX - rect.left) * (W / rect.width);
     const y = (clientY - rect.top) * (H / rect.height);
+    if (state === "settings") {
+      for (const r of settingsHitRects) {
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+          if (r.key === "_close") { state = prevStateBeforeSettings; updateButtons(); }
+          else saveSetting(r.key, !settings[r.key]);
+          return true;
+        }
+      }
+      return true;
+    }
     if (state === "menu" && y >= 386 && y <= 412) {
       const diffKeys = Object.keys(DIFFICULTIES);
       const pillW = 72, pillGap = 8;
@@ -1583,6 +1657,16 @@
   muteBtn.addEventListener("click", toggleMute);
   fullscreenBtn.addEventListener("click", toggleFullscreen);
   shareBtn.addEventListener("click", shareScore);
+  settingsBtn.addEventListener("click", (event) => {
+    event?.preventDefault?.();
+    if (state === "settings") { state = prevStateBeforeSettings; updateButtons(); }
+    else if (state !== "playing" && state !== "dying") {
+      prevStateBeforeSettings = state;
+      state = "settings";
+      updateButtons();
+    }
+  });
+
   dailyBtn.addEventListener("click", (event) => {
     event?.preventDefault?.();
     ensureAudio();
@@ -1591,6 +1675,14 @@
     dailyMode = true;
     resetWorld(true);
     showMessage(`Daily #${dayNumber()} — good luck!`, 120);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (state === "playing") { state = "paused"; if (audioCtx) music.stop(); updateButtons(); }
+    } else {
+      lastTime = 0;
+    }
   });
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js").catch(() => {});
