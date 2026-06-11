@@ -7,6 +7,7 @@
   const muteBtn = document.getElementById("muteBtn");
   const fullscreenBtn = document.getElementById("fullscreenBtn");
   const shareBtn = document.getElementById("shareBtn");
+  const dailyBtn = document.getElementById("dailyBtn");
 
   const W = 400;
   const H = 600;
@@ -85,7 +86,7 @@
     classic: { label: "Classic", speed: 1.0,  gap: 0,   movingFrom: 30,  coinMult: 1 },
     insane:  { label: "Insane",  speed: 1.15, gap: -12, movingFrom: 10,  coinMult: 2 },
   };
-  let difficultyKey = localStorage.getItem("flappy-power-diff") || "classic";
+  let difficultyKey = save.difficulty;
   function diff() { return DIFFICULTIES[difficultyKey]; }
 
   const SKINS = [
@@ -122,9 +123,53 @@
   let tick = 0;
   let score = 0;
   let combo = 0;
-  let best = Number(localStorage.getItem("flappy-power-best") || 0);
-  let selectedSkin = Number(localStorage.getItem("flappy-power-skin") || 0);
-  let muted = localStorage.getItem("flappy-power-muted") === "1";
+  const SAVE_KEY = "flappy-power-save-v1";
+  function defaultSave() {
+    return {
+      version: 1, coins: 0, best: 0, skin: 0, muted: false, difficulty: "classic",
+      dailyBest: {}, achievements: [],
+      lifetime: { runs: 0, pipes: 0, coins: 0, powerups: 0, playTicks: 0, shieldSaves: 0, revives: 0, powerupCounts: {} },
+    };
+  }
+  function loadSave() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SAVE_KEY));
+      if (raw?.version === 1) return Object.assign(defaultSave(), raw);
+    } catch (_) {}
+    const s = defaultSave();
+    s.best = Number(localStorage.getItem("flappy-power-best") || 0);
+    s.coins = Number(localStorage.getItem("flappy-power-coins") || 0);
+    s.skin = Number(localStorage.getItem("flappy-power-skin") || 0);
+    s.muted = localStorage.getItem("flappy-power-muted") === "1";
+    s.difficulty = localStorage.getItem("flappy-power-diff") || "classic";
+    return s;
+  }
+  function persist() { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
+  const save = loadSave();
+
+  let best = save.best;
+  let selectedSkin = save.skin;
+  let muted = save.muted;
+  let dailyMode = false;
+  let rng = Math.random;
+
+  function mulberry32(seed) {
+    return () => {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function dateSeed() {
+    const d = new Date();
+    const s = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) | 0;
+    return { key: s, seed: h };
+  }
+  function dayNumber() {
+    return Math.floor(Date.now() / 86400e3);
+  }
   let flash = 0;
   let shake = 0;
   let messageTimer = 0;
@@ -165,10 +210,47 @@
   let fgLayer = [];
   let coins = [];
   let runCoins = 0;
-  let totalCoins = Number(localStorage.getItem("flappy-power-coins") || 0);
+  let totalCoins = save.coins;
   let reviveUsed = false;
   let reviveWindow = 0;
   let reviveTaps = 0;
+  let runFlaps = 0;
+  const runPowerTypes = new Set();
+  const toastQueue = [];
+
+  const ACHIEVEMENTS = [
+    { id: "first10",    label: "Double Digits",    test: (c) => c.run.score >= 10 },
+    { id: "first50",    label: "High Flyer",       test: (c) => c.run.score >= 50 },
+    { id: "pipes100",   label: "Centurion",        test: (c) => c.life.pipes >= 100 },
+    { id: "pipes1000",  label: "Pipe Dream",       test: (c) => c.life.pipes >= 1000 },
+    { id: "combo10",    label: "Combo King",       test: (c) => c.run.maxCombo >= 10 },
+    { id: "allPowers",  label: "Collector",        test: (c) => c.extra.powerTypes >= 6 },
+    { id: "frugal",     label: "Minimalist",       test: (c) => c.run.score >= 10 && c.extra.flaps <= 15 },
+    { id: "rich",       label: "Dragon Hoard",     test: (c) => c.life.coins >= 500 },
+    { id: "nightOwl",   label: "Night Owl",        test: (c) => c.run.score >= 50 },
+    { id: "shieldSave", label: "Close Call",       test: (c) => c.life.shieldSaves >= 5 },
+    { id: "revive1",    label: "Rise Again",       test: (c) => c.life.revives >= 1 },
+    { id: "coins200",   label: "Coin Collector",   test: (c) => c.life.coins >= 200 },
+    { id: "daily1",     label: "Daily Player",     test: (c) => Object.keys(save.dailyBest || {}).length >= 1 },
+    { id: "runs50",     label: "Dedicated",        test: (c) => c.life.runs >= 50 },
+    { id: "insane1",    label: "Daredevil",        test: (c) => c.extra.difficulty === "insane" && c.run.score >= 10 },
+  ];
+
+  function checkAchievements() {
+    const ctx2 = {
+      run: missionStats,
+      life: save.lifetime,
+      extra: { flaps: runFlaps, powerTypes: runPowerTypes.size, difficulty: difficultyKey },
+    };
+    for (const a of ACHIEVEMENTS) {
+      if (save.achievements.includes(a.id)) continue;
+      if (a.test(ctx2)) {
+        save.achievements.push(a.id);
+        toastQueue.push({ label: `🏆 ${a.label}`, t: 150 });
+        persist();
+      }
+    }
+  }
   let lastUnlockedIndex = unlockedSkinCount() - 1;
 
   const keys = { down: false, holdTicks: 0 };
@@ -196,7 +278,8 @@
   }
 
   function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-  function rand(min, max) { return min + Math.random() * (max - min); }
+  function rand(min, max) { return min + rng() * (max - min); }
+  function randFree(min, max) { return min + Math.random() * (max - min); }
 
   // Step 5: two-phase difficulty — caps at 1.0 up to score 65, then creeps slowly forever
   function difficulty() {
@@ -263,16 +346,18 @@
     reviveUsed = false;
     reviveWindow = 0;
     reviveTaps = 0;
+    runFlaps = 0;
+    runPowerTypes.clear();
     for (const p of particles) p.alive = false;
     trail = [];
     timeScale = 1;
     dyingTimer = 0;
     scorePulse = 0;
     camY = 0;
-    clouds = Array.from({ length: 7 }, (_, i) => ({ x: i * 72 + rand(0, 28), y: rand(38, 190), s: rand(0.55, 1.25), v: rand(0.10, 0.24) }));
-    hills = Array.from({ length: 5 }, (_, i) => ({ x: i * 108 - 20, y: SKY_H - rand(30, 80), s: rand(0.75, 1.35), v: rand(0.34, 0.48) }));
-    stars = Array.from({ length: 26 }, () => ({ x: rand(0, W), y: rand(16, 190), tw: rand(0, Math.PI * 2) }));
-    farLayer = Array.from({ length: 4 }, (_, i) => ({ x: i * 110, y: SKY_H - rand(60, 120), w: rand(80, 140), v: 0.28 }));
+    clouds = Array.from({ length: 7 }, (_, i) => ({ x: i * 72 + randFree(0, 28), y: randFree(38, 190), s: randFree(0.55, 1.25), v: randFree(0.10, 0.24) }));
+    hills = Array.from({ length: 5 }, (_, i) => ({ x: i * 108 - 20, y: SKY_H - randFree(30, 80), s: randFree(0.75, 1.35), v: randFree(0.34, 0.48) }));
+    stars = Array.from({ length: 26 }, () => ({ x: randFree(0, W), y: randFree(16, 190), tw: randFree(0, Math.PI * 2) }));
+    farLayer = Array.from({ length: 4 }, (_, i) => ({ x: i * 110, y: SKY_H - randFree(60, 120), w: randFree(80, 140), v: 0.28 }));
     fgLayer = Array.from({ length: 6 }, (_, i) => ({ x: i * 70, v: 1.0, kind: 0 }));
     weatherParticles = [];
     prevBiomeIdx = 0;
@@ -479,6 +564,7 @@
     bird.wing = 8;
     flapCooldown = COOLDOWN_TICKS;
     inputBuffer = 0;
+    runFlaps += 1;
     camY = 2;
     const trailColor = prestige() > 0 ? prestigeColor() : "rgba(255,255,255,.75)";
     addParticles(bird.x - 8, bird.y + 8, trailColor, 2, 1.6);
@@ -505,6 +591,7 @@
       return;
     }
     active[type] = POWERUPS[type].duration;
+    runPowerTypes.add(type);
     showMessage(`${POWERUPS[type].label}!`, 90);
     flash = 8;
     sfxPowerup(type);
@@ -515,17 +602,27 @@
   function checkUnlocks() {
     totalCoins += runCoins;
     runCoins = 0;
-    localStorage.setItem("flappy-power-coins", String(totalCoins));
+    save.coins = totalCoins;
     const previousBest = best;
     best = Math.max(best, score);
-    localStorage.setItem("flappy-power-best", String(best));
-    // Step 2: flag new best so the game-over overlay can show the banner
+    save.best = best;
+    save.lifetime.runs += 1;
+    save.lifetime.pipes += missionStats.pipesPassed;
+    save.lifetime.coins = totalCoins;
+    save.lifetime.powerups += missionStats.powerupsCollected;
+    if (dailyMode) {
+      const { key } = dateSeed();
+      save.dailyBest[key] = Math.max(save.dailyBest[key] || 0, score);
+    }
+    checkAchievements();
+    persist();
     if (best > previousBest) newBest = true;
     const unlocked = unlockedSkinCount() - 1;
     if (best > previousBest && unlocked > lastUnlockedIndex) {
       lastUnlockedIndex = unlocked;
       selectedSkin = unlocked;
-      localStorage.setItem("flappy-power-skin", String(selectedSkin));
+      save.skin = selectedSkin;
+      persist();
       showMessage(`Unlocked ${SKINS[unlocked].name} skin!`, 140);
       flash = 18;
       addParticles(bird.x, bird.y, SKINS[unlocked].glow, 36, 4.6);
@@ -541,6 +638,7 @@
       bird.vy = FLAP * 0.72;
       shake = 12;
       flash = 18;
+      save.lifetime.shieldSaves += 1;
       showMessage("Shield saved you!", 90);
       if (sourcePipe) {
         sourcePipe.passed = true;
@@ -608,6 +706,8 @@
     }
     if (state === "menu" || state === "gameover") {
       if (state === "gameover" && gameoverLock > 0) return;
+      rng = Math.random;
+      dailyMode = false;
       resetWorld(true);
       inputBuffer = BUFFER_TICKS;
     } else if (state === "paused") {
@@ -830,19 +930,19 @@
     const speedMult = pipeSpeed() / BASE_PIPE_SPEED;
     for (const c of clouds) {
       c.x -= c.v * speedMult;
-      if (c.x < -80) Object.assign(c, { x: W + 80, y: rand(38, 190), s: rand(0.55, 1.25), v: rand(0.10, 0.24) });
+      if (c.x < -80) Object.assign(c, { x: W + 80, y: randFree(38, 190), s: randFree(0.55, 1.25), v: randFree(0.10, 0.24) });
     }
     for (const h of hills) {
       h.x -= h.v * speedMult;
-      if (h.x < -130) Object.assign(h, { x: W + rand(20, 70), y: SKY_H - rand(30, 80), s: rand(0.75, 1.35) });
+      if (h.x < -130) Object.assign(h, { x: W + randFree(20, 70), y: SKY_H - randFree(30, 80), s: randFree(0.75, 1.35) });
     }
     for (const f of farLayer) {
       f.x -= f.v * speedMult * 0.45;
-      if (f.x + f.w < -20) Object.assign(f, { x: W + 20, y: SKY_H - rand(60, 120), w: rand(80, 140) });
+      if (f.x + f.w < -20) Object.assign(f, { x: W + 20, y: SKY_H - randFree(60, 120), w: randFree(80, 140) });
     }
     for (const f of fgLayer) {
       f.x -= f.v * speedMult * 1.2;
-      if (f.x < -20) f.x = W + rand(0, 30);
+      if (f.x < -20) f.x = W + randFree(0, 30);
     }
     const bi = biomeIndex();
     if (bi !== prevBiomeIdx) { prevBiomeIdx = bi; biomeBlend = 0; showMessage(`${BIOMES[bi].name}!`, 90); }
@@ -850,7 +950,7 @@
     const biome = currentBiome();
     if (biome.weather === "snow") {
       if (weatherParticles.length < 40 && Math.random() < 0.5) {
-        weatherParticles.push({ x: rand(0, W), y: 0, vx: rand(-0.3, 0.3), vy: rand(0.8, 1.4), size: rand(2, 4) });
+        weatherParticles.push({ x: randFree(0, W), y: 0, vx: randFree(-0.3, 0.3), vy: randFree(0.8, 1.4), size: randFree(2, 4) });
       }
       for (const s of weatherParticles) {
         s.x += s.vx + Math.sin(tick * 0.02 + s.y) * 0.3;
@@ -1096,6 +1196,20 @@
     ctx.fillStyle = "#fde047"; ctx.font = "700 11px system-ui"; ctx.textAlign = "left";
     ctx.fillText(`🪙 ${runCoins}`, 28, 56);
 
+    if (toastQueue.length > 0) {
+      const toast = toastQueue[0];
+      toast.t -= 1;
+      if (toast.t <= 0) toastQueue.shift();
+      else {
+        const alpha = Math.min(1, toast.t / 20);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "#fbbf24"; roundRect(W / 2 - 100, 110, 200, 30, 14); ctx.fill();
+        ctx.fillStyle = "#0f172a"; ctx.font = "800 12px system-ui"; ctx.textAlign = "center";
+        ctx.fillText(toast.label, W / 2, 129);
+        ctx.globalAlpha = 1;
+      }
+    }
+
     drawMissions();
     if (messageTimer > 0) {
       ctx.globalAlpha = Math.min(1, messageTimer / 18);
@@ -1240,9 +1354,9 @@
   function draw() {
     ctx.save();
     if (shake > 0) {
-      const a = shakeAngle + rand(-0.5, 0.5);
+      const a = shakeAngle + randFree(-0.5, 0.5);
       const m = shake * 0.45;
-      ctx.translate(Math.cos(a) * rand(-m, m), Math.sin(a) * rand(-m, m));
+      ctx.translate(Math.cos(a) * randFree(-m, m), Math.sin(a) * randFree(-m, m));
     }
     ctx.translate(0, camY);
     const biome = currentBiome();
@@ -1336,7 +1450,8 @@
   function toggleMute(event) {
     event?.preventDefault?.();
     muted = !muted;
-    localStorage.setItem("flappy-power-muted", muted ? "1" : "0");
+    save.muted = muted;
+    persist();
     if (audioCtx) {
       if (muted) { audioCtx.suspend(); music.stop(); }
       else { audioCtx.resume(); if (state === "playing") music.start(); }
@@ -1353,7 +1468,9 @@
 
   async function shareScore(event) {
     event?.preventDefault?.();
-    const text = `I scored ${score} in Flappy Power and unlocked ${unlockedSkinCount()} skins!`;
+    const text = dailyMode
+      ? `Flappy Power Daily #${dayNumber()}: ${score} pts 🐤`
+      : `I scored ${score} in Flappy Power! 🐤 ${unlockedSkinCount()}/${SKINS.length} skins unlocked.`;
     try {
       if (navigator.share) await navigator.share({ title: "Flappy Power", text, url: location.href });
       else {
@@ -1375,7 +1492,8 @@
       for (const k of diffKeys) {
         if (x >= px && x <= px + pillW) {
           difficultyKey = k;
-          localStorage.setItem("flappy-power-diff", k);
+          save.difficulty = k;
+          persist();
           showMessage(`${DIFFICULTIES[k].label} mode!`, 80);
           return true;
         }
@@ -1387,7 +1505,8 @@
     const idx = Math.round((x - 48) / 43);
     if (idx >= 0 && idx < unlocked && idx < SKINS.length) {
       selectedSkin = idx;
-      localStorage.setItem("flappy-power-skin", String(selectedSkin));
+      save.skin = selectedSkin;
+      persist();
       showMessage(`${SKINS[idx].name} selected`, 80);
       return true;
     }
@@ -1407,6 +1526,15 @@
   muteBtn.addEventListener("click", toggleMute);
   fullscreenBtn.addEventListener("click", toggleFullscreen);
   shareBtn.addEventListener("click", shareScore);
+  dailyBtn.addEventListener("click", (event) => {
+    event?.preventDefault?.();
+    ensureAudio();
+    const { key, seed } = dateSeed();
+    rng = mulberry32(seed);
+    dailyMode = true;
+    resetWorld(true);
+    showMessage(`Daily #${dayNumber()} — good luck!`, 120);
+  });
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js").catch(() => {});
 
