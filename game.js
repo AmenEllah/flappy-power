@@ -97,6 +97,12 @@
   let ambientOsc = null;
   let spawnTimer = 0;
   let gameoverLock = 0;
+  let timeScale = 1;
+  let dyingTimer = 0;
+  let scorePulse = 0;
+  let camY = 0;
+  let shakeAngle = 0;
+  let blinkTimer = 180;
   let lastUnlockedIndex = unlockedSkinCount() - 1;
 
   const keys = { down: false, holdTicks: 0 };
@@ -105,11 +111,23 @@
 
   const bird = { x: 104, y: 250, r: 15, vy: 0, rot: 0, wing: 0, alive: true };
   let pipes = [];
-  let particles = [];
   let clouds = [];
   let hills = [];
   let stars = [];
   let active = { shield: 0, slow: 0, shrink: 0 };
+  const TRAIL_LEN = 6;
+  let trail = [];
+
+  const PARTICLE_POOL_SIZE = 300;
+  const particles = Array.from({ length: PARTICLE_POOL_SIZE }, () => ({
+    alive: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, color: "", r: 1, text: null,
+  }));
+
+  function spawnParticle(props) {
+    const p = particles.find((q) => !q.alive);
+    if (!p) return;
+    Object.assign(p, { alive: true, text: null }, props);
+  }
 
   function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
   function rand(min, max) { return min + Math.random() * (max - min); }
@@ -168,10 +186,15 @@
     flapCooldown = 0;
     keys.down = false;
     keys.holdTicks = 0;
-    Object.assign(bird, { x: 104, y: 250, vy: 0, rot: 0, wing: 0, alive: true });
+    Object.assign(bird, { x: 104, y: 250, vy: 0, rot: 0, wing: 0, alive: true, deathSpin: 0 });
     active = { shield: 0, slow: 0, shrink: 0 };
     pipes = [];
-    particles = [];
+    for (const p of particles) p.alive = false;
+    trail = [];
+    timeScale = 1;
+    dyingTimer = 0;
+    scorePulse = 0;
+    camY = 0;
     clouds = Array.from({ length: 7 }, (_, i) => ({ x: i * 72 + rand(0, 28), y: rand(38, 190), s: rand(0.55, 1.25), v: rand(0.10, 0.24) }));
     hills = Array.from({ length: 5 }, (_, i) => ({ x: i * 108 - 20, y: SKY_H - rand(30, 80), s: rand(0.75, 1.35), v: rand(0.34, 0.48) }));
     stars = Array.from({ length: 26 }, () => ({ x: rand(0, W), y: rand(16, 190), tw: rand(0, Math.PI * 2) }));
@@ -228,7 +251,8 @@
 
   function addParticles(x, y, color, count = 10, power = 2.4) {
     for (let i = 0; i < count; i++) {
-      particles.push({ x, y, vx: rand(-power, power), vy: rand(-power, power), life: rand(20, 46), max: 46, color, r: rand(1.4, 4.2) });
+      const life = rand(20, 46);
+      spawnParticle({ x, y, vx: rand(-power, power), vy: rand(-power, power), life, max: life, color, r: rand(1.4, 4.2) });
     }
   }
 
@@ -271,9 +295,9 @@
     bird.wing = 8;
     flapCooldown = COOLDOWN_TICKS;
     inputBuffer = 0;
-    // Step 7: prestige trail colour on flap particles
+    camY = 2;
     const trailColor = prestige() > 0 ? prestigeColor() : "rgba(255,255,255,.75)";
-    addParticles(bird.x - 8, bird.y + 8, trailColor, 5, 1.6);
+    addParticles(bird.x - 8, bird.y + 8, trailColor, 2, 1.6);
     beep(520, 0.055, "triangle", 0.035);
   }
 
@@ -341,18 +365,20 @@
       vibrate(20);
       return;
     }
-    state = "gameover";
+    state = "dying";
+    dyingTimer = 0;
+    timeScale = 0.35;
     bird.alive = false;
+    bird.vy = -4.2;
+    bird.deathSpin = 0.18;
     combo = 0;
     shake = 18;
     flash = 22;
-    gameoverLock = 24;
-    checkUnlocks();
+    shakeAngle = Math.atan2(bird.vy, 2);
     addParticles(bird.x, bird.y, "#fb7185", 34, 5);
     beep(130, 0.22, "sawtooth", 0.045);
     vibrate(20);
     if (ambientGain) ambientGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.8);
-    updateButtons();
   }
 
   function circleRectCollision(cx, cy, cr, rx, ry, rw, rh) {
@@ -437,8 +463,10 @@
         if (combo > missionStats.maxCombo) missionStats.maxCombo = combo;
         if (mult > missionStats.maxMultiplier) missionStats.maxMultiplier = mult;
         flash = 5;
+        scorePulse = 10;
+        spawnParticle({ x: pipe.x + pipe.w / 2, y: pipe.gapY, vx: 0, vy: -1.1, life: 40, max: 40, color: "#fff", r: 0, text: `+${mult}` });
 
-        // Step 4: near-miss bonus — tight vertical clearance earns +1
+        // near-miss bonus — tight vertical clearance earns +1
         const topH = pipe.gapY - pipe.gap / 2;
         const botY = pipe.gapY + pipe.gap / 2;
         const topClear = (bird.y - birdRadius()) - topH;
@@ -496,6 +524,40 @@
       bird.y = SKY_H - radius;
       crash();
     }
+
+    if (tick % 2 === 0) {
+      trail.push({ x: bird.x, y: bird.y });
+      if (trail.length > TRAIL_LEN) trail.shift();
+    }
+    if (scorePulse > 0) scorePulse -= 1;
+    camY *= 0.82;
+    if (blinkTimer > 0) blinkTimer -= 1;
+    updateAmbient();
+  }
+
+  function updateDying() {
+    tick += 1;
+    dyingTimer += 1;
+    if (flash > 0) flash -= 1;
+    if (shake > 0) shake -= 1;
+    if (dyingTimer === 26) timeScale = 1;
+    bird.vy = Math.min(MAX_FALL, bird.vy + GRAVITY);
+    bird.y += bird.vy;
+    bird.rot += bird.deathSpin;
+    if (bird.y + birdRadius() >= SKY_H) {
+      bird.y = SKY_H - birdRadius();
+      if (bird.vy > 2) {
+        addParticles(bird.x, SKY_H - 4, "rgba(120,53,15,.8)", 16, 3);
+        vibrate(12);
+        bird.vy = 0;
+      }
+      if (dyingTimer > 60) {
+        state = "gameover";
+        gameoverLock = 24;
+        checkUnlocks();
+        updateButtons();
+      }
+    }
     updateAmbient();
   }
 
@@ -509,16 +571,18 @@
       if (h.x < -130) Object.assign(h, { x: W + rand(20, 70), y: SKY_H - rand(30, 80), s: rand(0.75, 1.35) });
     }
     for (const p of particles) {
+      if (!p.alive) continue;
       p.x += p.vx;
       p.y += p.vy;
-      p.vy += 0.05;
+      if (!p.text) p.vy += 0.05;
       p.life -= 1;
+      if (p.life <= 0) p.alive = false;
     }
-    particles = particles.filter((p) => p.life > 0);
   }
 
   function update() {
     if (state === "playing") updatePlaying();
+    else if (state === "dying") updateDying();
     else {
       tick += 1;
       if (flash > 0) flash -= 1;
@@ -606,6 +670,8 @@
     ctx.save();
     ctx.translate(bird.x, bird.y);
     ctx.rotate(bird.rot);
+    const stretch = clamp(bird.vy * 0.018, -0.15, 0.15);
+    ctx.scale(1 - stretch, 1 + stretch);
     if (active.shield > 0 || shieldGrace > 0) {
       ctx.strokeStyle = shieldGrace > 0 ? "rgba(125, 211, 252, .92)" : "rgba(56, 189, 248, .72)";
       ctx.lineWidth = 4;
@@ -647,6 +713,11 @@
     ctx.beginPath();
     ctx.arc(6, -6, 2.6, 0, Math.PI * 2);
     ctx.fill();
+    if (blinkTimer <= 6) {
+      ctx.fillStyle = current.body;
+      ctx.fillRect(3, -9, 7, 6);
+      if (blinkTimer === 0) blinkTimer = Math.floor(rand(120, 260));
+    }
     ctx.restore();
   }
 
@@ -667,7 +738,8 @@
     ctx.fillStyle = "rgba(15, 23, 42, .36)";
     roundRect(14, 14, 134, 46, 18); ctx.fill();
     ctx.fillStyle = "#ffffff";
-    ctx.font = "800 28px system-ui"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    const pulseSize = Math.round(28 * (1 + scorePulse / 33));
+    ctx.font = `800 ${pulseSize}px system-ui`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
     ctx.fillText(String(score), 28, 36);
     ctx.font = "700 11px system-ui"; ctx.fillStyle = "rgba(255,255,255,.75)";
     ctx.fillText(`BEST ${best}`, 70, 29);
@@ -783,7 +855,12 @@
 
   function draw() {
     ctx.save();
-    if (shake > 0) ctx.translate(rand(-shake, shake) * 0.45, rand(-shake, shake) * 0.45);
+    if (shake > 0) {
+      const a = shakeAngle + rand(-0.5, 0.5);
+      const m = shake * 0.45;
+      ctx.translate(Math.cos(a) * rand(-m, m), Math.sin(a) * rand(-m, m));
+    }
+    ctx.translate(0, camY);
     // Step 5: clamp difficulty to 1 for the sky colour so it stays night at 65+
     const night = Math.min(1, difficulty());
     const sky = ctx.createLinearGradient(0, 0, 0, SKY_H);
@@ -802,10 +879,29 @@
     for (const h of hills) drawHill(h);
     for (const pipe of pipes) drawPipe(pipe);
     drawGround();
+    const trailColor = prestige() > 0 ? prestigeColor() : skin().glow;
+    trail.forEach((t, i) => {
+      ctx.globalAlpha = (i + 1) / TRAIL_LEN * 0.25;
+      ctx.fillStyle = trailColor;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, birdRadius() * (0.4 + 0.6 * (i + 1) / TRAIL_LEN), 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
     drawBird();
     for (const p of particles) {
+      if (!p.alive) continue;
       ctx.globalAlpha = Math.max(0, p.life / p.max);
-      ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+      if (p.text) {
+        ctx.font = "900 16px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = p.color;
+        ctx.fillText(p.text, p.x, p.y);
+      } else {
+        ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
     }
     drawHud();
     if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash / 70})`; ctx.fillRect(0, 0, W, H); }
@@ -817,7 +913,7 @@
 
   function frame(time) {
     if (!lastTime) lastTime = time;
-    accumulator += Math.min(80, time - lastTime);
+    accumulator += Math.min(80, (time - lastTime) * timeScale);
     lastTime = time;
     while (accumulator >= STEP) { update(); accumulator -= STEP; }
     draw();
