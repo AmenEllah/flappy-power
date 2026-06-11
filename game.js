@@ -83,6 +83,30 @@
     return "bonus";
   }
 
+  const SAVE_KEY = "flappy-power-save-v1";
+  function defaultSave() {
+    return {
+      version: 1, coins: 0, best: 0, skin: 0, muted: false, difficulty: "classic",
+      dailyBest: {}, achievements: [],
+      lifetime: { runs: 0, pipes: 0, coins: 0, powerups: 0, playTicks: 0, shieldSaves: 0, revives: 0, powerupCounts: {} },
+    };
+  }
+  function loadSave() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SAVE_KEY));
+      if (raw?.version === 1) return Object.assign(defaultSave(), raw);
+    } catch (_) {}
+    const s = defaultSave();
+    s.best = Number(localStorage.getItem("flappy-power-best") || 0);
+    s.coins = Number(localStorage.getItem("flappy-power-coins") || 0);
+    s.skin = Number(localStorage.getItem("flappy-power-skin") || 0);
+    s.muted = localStorage.getItem("flappy-power-muted") === "1";
+    s.difficulty = localStorage.getItem("flappy-power-diff") || "classic";
+    return s;
+  }
+  function persist() { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
+  const save = loadSave();
+
   const DIFFICULTIES = {
     chill:   { label: "Chill",   speed: 0.85, gap: +24, movingFrom: 999, coinMult: 1 },
     classic: { label: "Classic", speed: 1.0,  gap: 0,   movingFrom: 30,  coinMult: 1 },
@@ -125,29 +149,6 @@
   let tick = 0;
   let score = 0;
   let combo = 0;
-  const SAVE_KEY = "flappy-power-save-v1";
-  function defaultSave() {
-    return {
-      version: 1, coins: 0, best: 0, skin: 0, muted: false, difficulty: "classic",
-      dailyBest: {}, achievements: [],
-      lifetime: { runs: 0, pipes: 0, coins: 0, powerups: 0, playTicks: 0, shieldSaves: 0, revives: 0, powerupCounts: {} },
-    };
-  }
-  function loadSave() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(SAVE_KEY));
-      if (raw?.version === 1) return Object.assign(defaultSave(), raw);
-    } catch (_) {}
-    const s = defaultSave();
-    s.best = Number(localStorage.getItem("flappy-power-best") || 0);
-    s.coins = Number(localStorage.getItem("flappy-power-coins") || 0);
-    s.skin = Number(localStorage.getItem("flappy-power-skin") || 0);
-    s.muted = localStorage.getItem("flappy-power-muted") === "1";
-    s.difficulty = localStorage.getItem("flappy-power-diff") || "classic";
-    return s;
-  }
-  function persist() { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
-  const save = loadSave();
 
   let best = save.best;
   let selectedSkin = save.skin;
