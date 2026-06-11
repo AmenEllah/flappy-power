@@ -116,6 +116,20 @@
   let audioCtx = null;
   let ambientGain = null;
   let ambientOsc = null;
+  let masterGain = null;
+  let musicGain = null;
+  let sfxGain = null;
+  let noiseBuf = null;
+  const music = { timer: null, step: 0, nextTime: 0, intensity: 0 };
+
+  const BPM = 92;
+  const STEP_DUR = 60 / BPM / 2;
+  const CHORDS = [
+    [220.0, 261.6, 329.6],
+    [174.6, 220.0, 261.6],
+    [130.8, 164.8, 196.0],
+    [196.0, 246.9, 293.7],
+  ];
   let spawnTimer = 0;
   let gameoverLock = 0;
   let timeScale = 1;
@@ -236,7 +250,8 @@
     if (startPlaying) {
       spawnPipe();
       spawnTimer = pipeSpawnTicks();
-      if (ambientGain) ambientGain.gain.setTargetAtTime(0.008, audioCtx.currentTime, 0.5);
+      music.stop();
+      if (audioCtx) music.start();
     }
     gameoverLock = 0;
     updateButtons();
@@ -246,40 +261,137 @@
     if (muted) return;
     if (!audioCtx) {
       const Audio = window.AudioContext || window.webkitAudioContext;
-      if (Audio) {
-        audioCtx = new Audio();
-        startAmbient();
-      }
+      if (!Audio) return;
+      audioCtx = new Audio();
+      masterGain = audioCtx.createGain();
+      musicGain = audioCtx.createGain();
+      sfxGain = audioCtx.createGain();
+      musicGain.gain.value = 0.5;
+      sfxGain.gain.value = 1.0;
+      masterGain.gain.value = 1.0;
+      musicGain.connect(masterGain);
+      sfxGain.connect(masterGain);
+      masterGain.connect(audioCtx.destination);
     }
-    if (audioCtx?.state === "suspended") audioCtx.resume().then(() => { if (!ambientGain) startAmbient(); });
+    if (audioCtx.state === "suspended") audioCtx.resume();
   }
 
-  function startAmbient() {
-    if (!audioCtx || ambientGain || muted) return;
-    ambientOsc = audioCtx.createOscillator();
-    ambientGain = audioCtx.createGain();
-    ambientOsc.type = "sine";
-    ambientOsc.frequency.value = 82;
-    ambientGain.gain.value = 0.008;
-    ambientOsc.connect(ambientGain);
-    ambientGain.connect(audioCtx.destination);
-    ambientOsc.start();
+  function getNoise() {
+    if (!noiseBuf) {
+      noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.3, audioCtx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    return noiseBuf;
   }
 
-  function beep(freq = 440, duration = 0.08, type = "sine", gain = 0.045) {
-    if (muted || !audioCtx) return;
-    const now = audioCtx.currentTime;
+  function note(freq, t, dur, type, gainVal, dest) {
+    if (!audioCtx) return;
+    dest = dest || musicGain;
     const osc = audioCtx.createOscillator();
     const vol = audioCtx.createGain();
-    osc.frequency.setValueAtTime(freq, now);
     osc.type = type;
-    vol.gain.setValueAtTime(0.0001, now);
-    vol.gain.exponentialRampToValueAtTime(gain, now + 0.01);
-    vol.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    osc.frequency.value = freq;
+    vol.gain.setValueAtTime(0.0001, t);
+    vol.gain.exponentialRampToValueAtTime(gainVal, t + 0.02);
+    vol.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(vol); vol.connect(dest);
+    osc.start(t); osc.stop(t + dur + 0.05);
+  }
+
+  function noiseHit(t, dur, gainVal, filterFreq) {
+    if (!audioCtx) return;
+    const src = audioCtx.createBufferSource();
+    src.buffer = getNoise();
+    const f = audioCtx.createBiquadFilter();
+    f.type = "lowpass"; f.frequency.value = filterFreq;
+    const vol = audioCtx.createGain();
+    vol.gain.setValueAtTime(gainVal, t);
+    vol.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(vol); vol.connect(sfxGain);
+    src.start(t); src.stop(t + dur);
+  }
+
+  function duck() {
+    if (!musicGain || !audioCtx) return;
+    const t = audioCtx.currentTime;
+    musicGain.gain.cancelScheduledValues(t);
+    musicGain.gain.setValueAtTime(0.25, t);
+    musicGain.gain.linearRampToValueAtTime(0.5, t + 0.35);
+  }
+
+  function scheduleStep(step, t) {
+    const chord = CHORDS[Math.floor(step / 8) % CHORDS.length];
+    if (step % 8 === 0) note(chord[0] / 2, t, STEP_DUR * 7, "triangle", 0.05);
+    if (step % 4 === 2) note(chord[0], t, STEP_DUR * 2, "sine", 0.022);
+    if (music.intensity >= 1) note(chord[step % 3] * 2, t, STEP_DUR * 0.9, "square", 0.012);
+    if (music.intensity >= 2 && step % 2 === 0) note(2200 + (step % 4) * 180, t, 0.03, "square", 0.008);
+  }
+
+  music.start = () => {
+    if (music.timer || !audioCtx) return;
+    music.step = 0;
+    music.nextTime = audioCtx.currentTime + 0.1;
+    music.timer = setInterval(() => {
+      if (!audioCtx) return;
+      while (music.nextTime < audioCtx.currentTime + 0.12) {
+        scheduleStep(music.step, music.nextTime);
+        music.nextTime += STEP_DUR;
+        music.step = (music.step + 1) % 32;
+      }
+    }, 25);
+  };
+
+  music.stop = () => { clearInterval(music.timer); music.timer = null; };
+
+  function beep(freq = 440, duration = 0.08, type = "sine", gainVal = 0.045) {
+    if (muted || !audioCtx || !sfxGain) return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const vol = audioCtx.createGain();
+    osc.frequency.setValueAtTime(freq, t);
+    osc.type = type;
+    vol.gain.setValueAtTime(0.0001, t);
+    vol.gain.exponentialRampToValueAtTime(gainVal, t + 0.01);
+    vol.gain.exponentialRampToValueAtTime(0.0001, t + duration);
     osc.connect(vol);
-    vol.connect(audioCtx.destination);
-    osc.start(now);
-    osc.stop(now + duration + 0.02);
+    vol.connect(sfxGain);
+    osc.start(t);
+    osc.stop(t + duration + 0.02);
+  }
+
+  function sfxFlap() {
+    if (!audioCtx || muted) return;
+    const t = audioCtx.currentTime;
+    noiseHit(t, 0.08, 0.04, 1200);
+    const osc = audioCtx.createOscillator(); const vol = audioCtx.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(420, t);
+    osc.frequency.exponentialRampToValueAtTime(780, t + 0.07);
+    vol.gain.setValueAtTime(0.03, t);
+    vol.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    osc.connect(vol); vol.connect(sfxGain); osc.start(t); osc.stop(t + 0.1);
+  }
+
+  function sfxPowerup(type) {
+    if (!audioCtx || muted) return;
+    const motifs = {
+      shield: [440, 587, 880], slow: [660, 495, 330], shrink: [590, 740, 880],
+      bonus: [880, 1320], magnet: [392, 523, 659], ghost: [330, 247, 196],
+      double: [523, 659, 784, 1047], rocket: [440, 660, 880, 1320],
+    };
+    const freqs = motifs[type] || [880];
+    const t = audioCtx.currentTime;
+    freqs.forEach((f, i) => note(f, t + i * 0.09, 0.12, "triangle", 0.035, sfxGain));
+  }
+
+  function sfxComboFanfare(c) {
+    if (!audioCtx || muted) return;
+    const t = audioCtx.currentTime;
+    const semis = Math.min(c / 5, 5);
+    [523, 659, 784, 1047].forEach((f, i) => {
+      note(f * Math.pow(2, semis / 12), t + i * 0.07, 0.12, "triangle", 0.04, sfxGain);
+    });
   }
 
   function addParticles(x, y, color, count = 10, power = 2.4) {
@@ -331,7 +443,7 @@
     camY = 2;
     const trailColor = prestige() > 0 ? prestigeColor() : "rgba(255,255,255,.75)";
     addParticles(bird.x - 8, bird.y + 8, trailColor, 2, 1.6);
-    beep(520, 0.055, "triangle", 0.035);
+    sfxFlap();
   }
 
   function showMessage(text, ticks = 84) {
@@ -348,7 +460,7 @@
       missionStats.score = score;
       showMessage(`+${pts} bonus!`, 72);
       flash = 10;
-      beep(880, 0.09, "square", 0.035);
+      sfxPowerup("bonus");
       vibrate(10);
       checkUnlocks();
       return;
@@ -356,7 +468,7 @@
     active[type] = POWERUPS[type].duration;
     showMessage(`${POWERUPS[type].label}!`, 90);
     flash = 8;
-    beep(type === "shield" ? 660 : type === "shrink" ? 590 : 330, 0.12, "triangle", 0.04);
+    sfxPowerup(type);
     vibrate(10);
     if (type === "shield") missionStats.shieldsCollected += 1;
   }
@@ -394,7 +506,7 @@
         addParticles(sourcePipe.x + sourcePipe.w / 2, sourcePipe.gapY, POWERUPS.shield.color, 18, 5.2);
       }
       addParticles(bird.x, bird.y, POWERUPS.shield.color, 24, 4.2);
-      beep(220, 0.16, "sawtooth", 0.04);
+      noiseHit(audioCtx ? audioCtx.currentTime : 0, 0.18, 0.06, 800);
       vibrate(20);
       return;
     }
@@ -409,9 +521,15 @@
     flash = 22;
     shakeAngle = Math.atan2(bird.vy, 2);
     addParticles(bird.x, bird.y, "#fb7185", 34, 5);
-    beep(130, 0.22, "sawtooth", 0.045);
+    if (audioCtx) {
+      const t = audioCtx.currentTime;
+      noiseHit(t, 0.25, 0.08, 500);
+      note(220, t, 0.15, "sawtooth", 0.04, sfxGain);
+      note(110, t + 0.12, 0.2, "sawtooth", 0.04, sfxGain);
+      duck();
+      music.stop();
+    }
     vibrate(20);
-    if (ambientGain) ambientGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.8);
   }
 
   function circleRectCollision(cx, cy, cr, rx, ry, rw, rh) {
@@ -514,11 +632,14 @@
           vibrate(8);
         } else {
           addParticles(bird.x, bird.y - 20, combo >= 5 ? "#f0abfc" : "#fde68a", combo >= 5 ? 14 : 8, 2.4);
-          beep(combo >= 5 ? 960 : 760, 0.06, "sine", 0.03);
+          const pitch = (combo >= 5 ? 760 : 680) * Math.pow(2, Math.min(combo, 12) / 24);
+          beep(pitch, 0.06, "sine", 0.03);
         }
 
         if (combo === 5 || combo === 10 || combo === 20) {
           showMessage(`Combo x${combo}! ${mult > 1 ? `×${mult} score` : ""}`, 84);
+          sfxComboFanfare(combo);
+          duck();
           vibrate(15);
         }
         checkUnlocks();
@@ -565,6 +686,7 @@
     if (scorePulse > 0) scorePulse -= 1;
     camY *= 0.82;
     if (blinkTimer > 0) blinkTimer -= 1;
+    music.intensity = score >= 40 ? 2 : score >= 20 ? 1 : 0;
     updateAmbient();
   }
 
@@ -1031,8 +1153,9 @@
     event?.preventDefault?.();
     if (state === "playing") state = "paused";
     else if (state === "paused") state = "playing";
-    if (ambientGain && audioCtx) {
-      ambientGain.gain.setTargetAtTime(state === "playing" ? 0.008 : 0, audioCtx.currentTime, 0.3);
+    if (audioCtx) {
+      if (state === "playing") music.start();
+      else music.stop();
     }
     updateButtons();
   }
@@ -1042,8 +1165,8 @@
     muted = !muted;
     localStorage.setItem("flappy-power-muted", muted ? "1" : "0");
     if (audioCtx) {
-      if (muted) audioCtx.suspend();
-      else audioCtx.resume();
+      if (muted) { audioCtx.suspend(); music.stop(); }
+      else { audioCtx.resume(); if (state === "playing") music.start(); }
     }
     updateButtons();
   }
