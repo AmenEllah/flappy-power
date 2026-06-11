@@ -211,6 +211,7 @@
   let coins = [];
   let runCoins = 0;
   let totalCoins = save.coins;
+  let lastRunDate = 0;
   let reviveUsed = false;
   let reviveWindow = 0;
   let reviveTaps = 0;
@@ -615,6 +616,12 @@
       save.dailyBest[key] = Math.max(save.dailyBest[key] || 0, score);
     }
     checkAchievements();
+    lastRunDate = Date.now();
+    save.runs = save.runs || [];
+    save.runs.push({ score, coins: save.coins - (save._prevCoins || 0), date: lastRunDate, diff: difficultyKey, daily: dailyMode });
+    save._prevCoins = save.coins;
+    save.runs.sort((a, b) => b.score - a.score);
+    save.runs = save.runs.slice(0, 10);
     persist();
     if (best > previousBest) newBest = true;
     const unlocked = unlockedSkinCount() - 1;
@@ -1280,6 +1287,20 @@
     ctx.fillStyle = "#f97316"; roundRect(92, btnY, W - 184, 48, 24); ctx.fill();
     ctx.fillStyle = "#fff"; ctx.font = "900 16px system-ui"; ctx.fillText(button, W / 2, btnY + 30);
     ctx.fillStyle = "#64748b"; ctx.font = "700 12px system-ui"; ctx.fillText("Tap canvas or press Space", W / 2, btnY + 54);
+    if (state === "gameover" && save.runs?.length) {
+      const rows = save.runs.slice(0, 5);
+      ctx.font = "700 11px system-ui";
+      rows.forEach((r, i) => {
+        const isThis = r.date === lastRunDate;
+        ctx.fillStyle = isThis ? "#f97316" : "#64748b";
+        ctx.textAlign = "left";
+        ctx.fillText(`${i + 1}. ${r.score} pts${r.daily ? " ★" : ""}`, 52, 266 + i * 16);
+        ctx.textAlign = "right";
+        const ago = Math.floor((Date.now() - r.date) / 60000);
+        ctx.fillText(`${r.diff[0].toUpperCase()} · ${ago < 1 ? "now" : ago < 60 ? ago + "m" : Math.floor(ago / 60) + "h"}`, W - 52, 266 + i * 16);
+      });
+    }
+
     if (state === "menu") {
       const diffKeys = Object.keys(DIFFICULTIES);
       const pillW = 72, pillH = 26, pillGap = 8;
@@ -1466,14 +1487,50 @@
     else if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
   }
 
+  function renderShareCard() {
+    const c = document.createElement("canvas");
+    c.width = 1200; c.height = 630;
+    const s = c.getContext("2d");
+    const biome = currentBiome();
+    const skyG = s.createLinearGradient(0, 0, 0, 630);
+    biome.sky.forEach((col, i) => skyG.addColorStop(i / (biome.sky.length - 1), col));
+    s.fillStyle = skyG; s.fillRect(0, 0, 1200, 630);
+    s.fillStyle = biome.groundA; s.fillRect(0, 580, 1200, 50);
+    s.fillStyle = "rgba(15,23,42,.55)"; s.fillRect(0, 0, 680, 630);
+    s.fillStyle = "#fff"; s.textAlign = "left"; s.font = "900 58px system-ui";
+    s.fillText("Flappy Power", 70, 120);
+    s.font = "900 200px system-ui"; s.fillStyle = active.double > 0 ? "#fde047" : "#fff";
+    s.fillText(String(score), 70, 370);
+    s.font = "700 38px system-ui"; s.fillStyle = "#fde68a";
+    s.fillText(dailyMode ? `Daily #${dayNumber()}` : `Best: ${best}`, 70, 440);
+    s.font = "600 28px system-ui"; s.fillStyle = "rgba(255,255,255,.85)";
+    s.fillText(`${biome.name} · ${skin().name} skin · 🪙 ${totalCoins}`, 70, 500);
+    s.fillText(location.host + location.pathname, 70, 570);
+    const sk = skin();
+    s.save(); s.translate(950, 330); s.rotate(-0.12);
+    s.fillStyle = sk.body; s.beginPath(); s.arc(0, 0, 90, 0, Math.PI * 2); s.fill();
+    s.fillStyle = sk.beak; s.beginPath(); s.moveTo(72, -12); s.lineTo(130, 18); s.lineTo(72, 48); s.closePath(); s.fill();
+    s.fillStyle = sk.eye; s.beginPath(); s.arc(36, -36, 16, 0, Math.PI * 2); s.fill();
+    s.restore();
+    return c;
+  }
+
   async function shareScore(event) {
     event?.preventDefault?.();
     const text = dailyMode
       ? `Flappy Power Daily #${dayNumber()}: ${score} pts 🐤`
       : `I scored ${score} in Flappy Power! 🐤 ${unlockedSkinCount()}/${SKINS.length} skins unlocked.`;
     try {
-      if (navigator.share) await navigator.share({ title: "Flappy Power", text, url: location.href });
-      else {
+      const blob = await new Promise((res) => renderShareCard().toBlob(res, "image/png"));
+      const file = new File([blob], "flappy-power.png", { type: "image/png" });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Flappy Power", text });
+      } else if (navigator.clipboard?.write && window.ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        showMessage("Card copied!", 90);
+      } else if (navigator.share) {
+        await navigator.share({ title: "Flappy Power", text, url: location.href });
+      } else {
         await navigator.clipboard.writeText(`${text} ${location.href}`);
         showMessage("Score copied!", 90);
       }
